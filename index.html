@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Volleyball Showdown</title>
+    <!-- Use Tailwind CDN for the main document structure -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom CSS for the Game Canvas and Elements */
+        @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&display=swap');
+
+        body {
+            background-color: #1a202c; /* Dark background */
+            font-family: 'Chakra Petch', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+
+        #game-container {
+            border: 8px solid #3c82f6; /* Blue border */
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.5);
+            border-radius: 20px;
+            overflow: hidden;
+            background-color: #0d1117;
+            max-width: 90vw;
+            width: 800px; /* Base width */
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #gameCanvas {
+            background-color: #3b82f6; /* Court background */
+            display: block;
+            width: 100%;
+            height: auto; /* Managed by JS to maintain aspect ratio */
+            border-radius: 12px 12px 0 0;
+        }
+
+        .score-board {
+            width: 100%;
+            padding: 10px 20px;
+            background-color: #1f2937;
+            color: #f9f9f9;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 1.5rem;
+            border-radius: 0 0 12px 12px;
+            box-shadow: 0 -4px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        .controls-info {
+            background-color: #1f2937;
+            color: #d1d5db;
+            padding: 10px;
+            margin-top: 20px;
+            border-radius: 8px;
+            text-align: center;
+            font-size: 0.8rem;
+            max-width: 800px;
+            width: 100%;
+        }
+
+        .key {
+            display: inline-block;
+            background-color: #4b5563;
+            color: #ffffff;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin: 0 2px;
+            box-shadow: 0 2px 0 #1f2937;
+        }
+
+        @media (max-width: 640px) {
+            .score-board {
+                font-size: 1.2rem;
+            }
+            .controls-info {
+                font-size: 0.7rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container" class="transition-all duration-300">
+        <canvas id="gameCanvas" width="800" height="400"></canvas>
+        <div class="score-board">
+            <div id="score-p1" class="font-bold text-yellow-300">Player 1 (WAD): 0</div>
+            <div id="status-message" class="text-center text-sm font-semibold text-white">Press SPACE to serve</div>
+            <div id="score-p2" class="font-bold text-red-400">Player 2 (🡹🡸🡺): 0</div>
+        </div>
+    </div>
+    <div class="controls-info">
+        <p class="mb-1">
+            <span class="font-bold text-yellow-300">Player 1:</span> Move <span class="key">A</span> <span class="key">D</span>, Jump/Hit <span class="key">W</span>
+        </p>
+        <p>
+            <span class="font-bold text-red-400">Player 2:</span> Move <span class="key">🡸</span> <span class="key">🡺</span>, Jump/Hit <span class="key">🡹</span>
+        </p>
+    </div>
+
+    <script>
+        // Game Constants
+        const CANVAS_WIDTH = 800;
+        const CANVAS_HEIGHT = 400;
+        const COURT_COLOR = '#3b82f6';
+        const LINE_COLOR = '#ffffff';
+        const NET_COLOR = '#eeeeee';
+        const GRAVITY = 0.5;
+        const PLAYER_SPEED = 5;
+        const JUMP_POWER = 12;
+        const MAX_SCORE = 5;
+
+        // Setup Canvas
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = CANVAS_WIDTH;
+        canvas.height = CANVAS_HEIGHT;
+
+        // DOM Elements
+        const scoreP1El = document.getElementById('score-p1');
+        const scoreP2El = document.getElementById('score-p2');
+        const statusMessageEl = document.getElementById('status-message');
+
+        // Game State
+        let gameRunning = true;
+        let ballInPlay = false;
+        let winningPlayer = null;
+        let lastTouch = null; // 'p1' or 'p2'
+        let serveReady = true;
+
+        // Game Objects
+        const Court = {
+            width: CANVAS_WIDTH,
+            height: CANVAS_HEIGHT,
+            netX: CANVAS_WIDTH / 2,
+            netHeight: 150,
+            floorY: CANVAS_HEIGHT - 20,
+            playerArea: {
+                p1: { minX: 0, maxX: CANVAS_WIDTH / 2 - 20 },
+                p2: { minX: CANVAS_WIDTH / 2 + 20, maxX: CANVAS_WIDTH }
+            }
+        };
+
+        class Player {
+            constructor(x, color, controls) {
+                this.x = x;
+                this.y = Court.floorY - 60;
+                this.width = 40;
+                this.height = 60;
+                this.color = color;
+                this.score = 0;
+                this.dx = 0; // Horizontal velocity
+                this.dy = 0; // Vertical velocity (jump)
+                this.isJumping = false;
+                this.isServing = false;
+                this.controls = controls; // { up, left, right }
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                // Body (Rounded Rectangle)
+                ctx.roundRect(this.x - this.width / 2, this.y, this.width, this.height, 5);
+                ctx.fill();
+
+                // Eyes (Small circles for simple face)
+                ctx.fillStyle = '#1f2937';
+                ctx.beginPath();
+                ctx.arc(this.x - 10, this.y + 15, 3, 0, Math.PI * 2);
+                ctx.arc(this.x + 10, this.y + 15, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            update() {
+                // Apply Gravity
+                if (this.y < Court.floorY - this.height) {
+                    this.dy += GRAVITY;
+                    this.isJumping = true;
+                } else {
+                    this.y = Court.floorY - this.height;
+                    this.dy = 0;
+                    this.isJumping = false;
+                }
+
+                this.y += this.dy;
+
+                // Horizontal movement
+                this.x += this.dx;
+
+                // Restrict movement to own side
+                if (this.x < Court.playerArea[this.controls.side].minX + this.width / 2) {
+                    this.x = Court.playerArea[this.controls.side].minX + this.width / 2;
+                }
+                if (this.x > Court.playerArea[this.controls.side].maxX - this.width / 2) {
+                    this.x = Court.playerArea[this.controls.side].maxX - this.width / 2;
+                }
+            }
+
+            jump() {
+                if (!this.isJumping) {
+                    this.dy = -JUMP_POWER;
+                    this.isJumping = true;
+                }
+            }
+        }
+
+        class Ball {
+            constructor(x, y, radius) {
+                this.x = x;
+                this.y = y;
+                this.radius = radius;
+                this.dx = 0;
+                this.dy = 0;
+                this.color = '#facc15';
+                this.bounceFactor = 0.8;
+                this.maxSpeed = 15;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Simple lines to make it look like a volleyball
+                ctx.strokeStyle = '#fef3c7';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(this.x - this.radius, this.y);
+                ctx.lineTo(this.x + this.radius, this.y);
+                ctx.moveTo(this.x, this.y - this.radius);
+                ctx.lineTo(this.x, this.y + this.radius);
+                ctx.stroke();
+            }
+
+            update() {
+                if (!ballInPlay) return;
+
+                // Apply gravity to vertical velocity
+                this.dy += GRAVITY;
+
+                // Update position
+                this.x += this.dx;
+                this.y += this.dy;
+
+                // Cap speed
+                this.dx = Math.min(Math.max(this.dx, -this.maxSpeed), this.maxSpeed);
+                this.dy = Math.min(Math.max(this.dy, -this.maxSpeed), this.maxSpeed);
+
+                // Wall collisions (Left/Right)
+                if (this.x - this.radius < 0 || this.x + this.radius > Court.width) {
+                    this.dx *= -1;
+                    this.x = Math.max(this.radius, Math.min(this.x, Court.width - this.radius));
+                }
+
+                // Ceiling collision
+                if (this.y - this.radius < 0) {
+                    this.dy *= -this.bounceFactor;
+                    this.y = this.radius;
+                }
+
+                // Floor collision (Scoring Logic)
+                if (this.y + this.radius > Court.floorY) {
+                    this.y = Court.floorY - this.radius;
+                    this.dy = 0; // Stop vertical movement
+                    this.handleScore();
+                }
+
+                // Net collision
+                this.handleNetCollision();
+            }
+
+            handleNetCollision() {
+                const netWidth = 10;
+                const netLeft = Court.netX - netWidth / 2;
+                const netRight = Court.netX + netWidth / 2;
+                const netTop = Court.floorY - Court.netHeight;
+
+                // Check for collision with the net structure
+                if (
+                    this.x + this.radius > netLeft && this.x - this.radius < netRight &&
+                    this.y + this.radius > netTop
+                ) {
+                    // Ball is hitting the net
+
+                    // 1. Horizontal Bounce (if hitting the side of the net)
+                    if (this.x < netLeft && this.dx > 0) { // Hitting left side of net, moving right
+                        this.x = netLeft - this.radius;
+                        this.dx *= -0.7; // Reduced horizontal bounce
+                    } else if (this.x > netRight && this.dx < 0) { // Hitting right side of net, moving left
+                        this.x = netRight + this.radius;
+                        this.dx *= -0.7;
+                    }
+
+                    // 2. Vertical Bounce (if hitting the top edge of the net)
+                    if (this.y < netTop && this.dy > 0 && Math.abs(this.x - Court.netX) < netWidth / 2) {
+                         this.y = netTop - this.radius;
+                         this.dy *= -0.7; // Reduced vertical bounce
+                    }
+
+                    // 3. If below the net top, treat it as a dead ball or a strong bounce
+                    if (this.y + this.radius > netTop) {
+                        // The ball is hitting the main net body
+                        // If the ball's center is on one side, force it back to that side
+                        if (this.x < Court.netX) { // On left side
+                            if (this.dx > 0) this.dx *= -1; // Push it back left
+                        } else { // On right side
+                            if (this.dx < 0) this.dx *= -1; // Push it back right
+                        }
+                        this.dx *= 0.5; // Slow down
+                    }
+                }
+            }
+
+            handleScore() {
+                ballInPlay = false;
+                serveReady = true;
+
+                let scoringPlayer = null;
+                const hitFloorX = this.x;
+
+                // Check which side the ball landed on
+                if (hitFloorX < Court.netX) {
+                    // Landed on Player 1's side (Player 2 scores)
+                    scoringPlayer = p2;
+                    statusMessageEl.textContent = "Point for Player 2!";
+                    lastTouch = 'p1'; // P1 failed to return
+                } else {
+                    // Landed on Player 2's side (Player 1 scores)
+                    scoringPlayer = p1;
+                    statusMessageEl.textContent = "Point for Player 1!";
+                    lastTouch = 'p2'; // P2 failed to return
+                }
+
+                if (scoringPlayer) {
+                    scoringPlayer.score++;
+                    this.checkWinCondition();
+                }
+            }
+
+            checkWinCondition() {
+                if (p1.score >= MAX_SCORE) {
+                    winningPlayer = 'Player 1';
+                    gameRunning = false;
+                } else if (p2.score >= MAX_SCORE) {
+                    winningPlayer = 'Player 2';
+                    gameRunning = false;
+                }
+
+                if (!gameRunning) {
+                    statusMessageEl.textContent = `${winningPlayer} Wins! Press F5 to play again.`;
+                }
+            }
+        }
+
+        // Initialize Players and Ball
+        const p1 = new Player(CANVAS_WIDTH / 4, '#fde047', { up: 'w', left: 'a', right: 'd', side: 'p1' });
+        const p2 = new Player(CANVAS_WIDTH * 3 / 4, '#f87171', { up: 'ArrowUp', left: 'ArrowLeft', right: 'ArrowRight', side: 'p2' });
+        const ball = new Ball(p1.x, p1.y - 20, 15);
+
+        // Input Tracking
+        const keysPressed = {};
+
+        document.addEventListener('keydown', (e) => {
+            keysPressed[e.key] = true;
+
+            // Serve action
+            if (e.key === ' ' && !ballInPlay && serveReady) {
+                ballInPlay = true;
+                serveReady = false;
+                ball.dx = (Math.random() > 0.5 ? 5 : -5); // Random initial direction
+                ball.dy = -10; // Initial upward velocity
+                statusMessageEl.textContent = "Game In Progress!";
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            keysPressed[e.key] = false;
+        });
+
+        function handleInput() {
+            if (!gameRunning) return;
+
+            // Player 1 controls
+            p1.dx = 0;
+            if (keysPressed[p1.controls.left]) p1.dx = -PLAYER_SPEED;
+            if (keysPressed[p1.controls.right]) p1.dx = PLAYER_SPEED;
+            if (keysPressed[p1.controls.up]) p1.jump();
+
+            // Player 2 controls
+            p2.dx = 0;
+            if (keysPressed[p2.controls.left]) p2.dx = -PLAYER_SPEED;
+            if (keysPressed[p2.controls.right]) p2.dx = PLAYER_SPEED;
+            if (keysPressed[p2.controls.up]) p2.jump();
+        }
+
+        function checkPlayerBallCollision(player, ball) {
+            // Simple AABB vs Circle check
+            const closestX = Math.max(player.x - player.width / 2, Math.min(ball.x, player.x + player.width / 2));
+            const closestY = Math.max(player.y, Math.min(ball.y, player.y + player.height));
+
+            const distanceX = ball.x - closestX;
+            const distanceY = ball.y - closestY;
+            const distanceSq = (distanceX * distanceX) + (distanceY * distanceY);
+
+            if (distanceSq < (ball.radius * ball.radius)) {
+                // Collision detected!
+
+                // 1. Calculate the new velocity magnitude
+                const speed = Math.sqrt(ball.dx * ball.dx + ball.dy * ball.dy);
+                const impactForce = 1.0; // Base force multiplier
+
+                // 2. Normalize collision vector (closestX, closestY) to ball center (ball.x, ball.y)
+                let normalX = ball.x - closestX;
+                let normalY = ball.y - closestY;
+                const normalLength = Math.sqrt(normalX * normalX + normalY * normalY);
+                normalX /= normalLength;
+                normalY /= normalLength;
+
+                // 3. Calculate new direction and speed
+                // Add a directional component based on where the player is moving/jumping
+                let newDx = normalX * speed * impactForce + player.dx * 0.5;
+                let newDy = normalY * speed * impactForce + player.dy * 0.5;
+
+                // Ensure a minimum upward velocity for better gameplay feel
+                if (newDy > -5) newDy = -5;
+
+                ball.dx = newDx;
+                ball.dy = newDy;
+
+                // Push ball out of player's bounds to prevent sticky behavior
+                const overlap = ball.radius - normalLength;
+                ball.x += normalX * overlap * 1.5;
+                ball.y += normalY * overlap * 1.5;
+
+                // Update last touch for scoring
+                lastTouch = (player === p1) ? 'p1' : 'p2';
+            }
+        }
+
+        // --- Drawing Functions ---
+
+        function drawCourt() {
+            // Draw Court Floor
+            ctx.fillStyle = COURT_COLOR;
+            ctx.fillRect(0, Court.floorY, Court.width, Court.height - Court.floorY);
+
+            // Draw Court Line (Floor)
+            ctx.strokeStyle = LINE_COLOR;
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(0, Court.floorY);
+            ctx.lineTo(Court.width, Court.floorY);
+            ctx.stroke();
+
+            // Draw Net
+            ctx.fillStyle = NET_COLOR;
+            const netWidth = 10;
+            const netX = Court.netX - netWidth / 2;
+            const netHeight = Court.netHeight;
+            const netY = Court.floorY - netHeight;
+
+            // Net posts
+            ctx.fillRect(netX, netY, netWidth, netHeight);
+
+            // Net mesh (simplified)
+            ctx.strokeStyle = '#aaaaaa';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let i = 0; i < 5; i++) {
+                ctx.moveTo(netX, netY + i * (netHeight / 4));
+                ctx.lineTo(netX + netWidth, netY + i * (netHeight / 4));
+            }
+            ctx.stroke();
+
+            // Center dividing line (under the net)
+            ctx.strokeStyle = LINE_COLOR;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(Court.netX, netY);
+            ctx.lineTo(Court.netX, Court.floorY);
+            ctx.stroke();
+        }
+
+        function draw() {
+            // Clear Canvas
+            ctx.clearRect(0, 0, Court.width, Court.height);
+
+            // Draw Court
+            drawCourt();
+
+            // Draw Players
+            p1.draw();
+            p2.draw();
+
+            // Draw Ball
+            ball.draw();
+
+            // Update Scoreboard
+            scoreP1El.textContent = `Player 1 (WAD): ${p1.score}`;
+            scoreP2El.textContent = `Player 2 (🡹🡸🡺): ${p2.score}`;
+        }
+
+        // --- Game Loop ---
+
+        function update() {
+            if (gameRunning) {
+                // 1. Handle Input
+                handleInput();
+
+                // 2. Update Game Objects
+                p1.update();
+                p2.update();
+
+                // If ball is not in play, keep it above the last player who touched it (for serving)
+                if (!ballInPlay) {
+                    const server = (p1.score + p2.score) % 2 === 0 ? p1 : p2; // Simple alternating serve
+                    ball.x = server.x;
+                    ball.y = server.y - 40;
+                    ball.dx = 0;
+                    ball.dy = 0;
+                    if (serveReady) {
+                        statusMessageEl.textContent = `Player ${server === p1 ? 1 : 2} to serve. Press SPACE.`;
+                    }
+                } else {
+                    ball.update();
+
+                    // 3. Collision Checks
+                    checkPlayerBallCollision(p1, ball);
+                    checkPlayerBallCollision(p2, ball);
+                }
+            }
+
+            // 4. Draw
+            draw();
+
+            // Request next frame
+            requestAnimationFrame(update);
+        }
+
+        // Start the game loop on window load
+        window.onload = function () {
+            requestAnimationFrame(update);
+        }
+
+    </script>
+</body>
+</html>
