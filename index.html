@@ -36,6 +36,7 @@
             display: flex;
             flex-direction: column;
             align-items: center;
+            position: relative; /* Needed for pause overlay */
         }
 
         #gameCanvas {
@@ -117,7 +118,7 @@
     </div>
     <div class="controls-info">
         <p class="mb-1">
-            <span class="font-bold text-yellow-300">Player 1:</span> Move <span class="key">A</span> <span class="key">D</span>, Jump/Hit <span class="key">W</span>
+            <span class="font-bold text-yellow-300">Player 1:</span> Move <span class="key">A</span> <span class="key">D</span>, Jump/Hit <span class="key">W</span>, Pause <span class="key">P</span>
         </p>
         <p>
             <span class="font-bold text-red-400">Computer:</span> **AI Controlled**
@@ -128,7 +129,7 @@
             <span id="difficulty-label" class="ml-3 w-20 text-yellow-300 font-bold text-left">Medium (5)</span>
         </div>
         <p class="mt-2 text-xs text-gray-400">
-            **Rule:** Max **3 hits** per side! Jump and hit while moving down to **SPIKE**! (Click anywhere to enable audio)
+            **New Features:** **Wind** is now active (check top-left corner)! Spike for a **BOOST**!
         </p>
     </div>
 
@@ -140,30 +141,32 @@
         const LINE_COLOR = '#ffffff';
         const NET_COLOR = '#eeeeee';
         const GRAVITY = 0.5;
-        const PLAYER_SPEED = 5;
-        const JUMP_POWER = 12;
+        const BASE_PLAYER_SPEED = 5;
+        const BASE_JUMP_POWER = 12;
         const MAX_SCORE = 5;
-        const MAX_TOUCHES = 3; // Max hits per side before crossing the net
+        const MAX_TOUCHES = 3; 
+        const BOOST_TIME = 180; // 3 seconds at ~60 FPS
+        const BOOST_SPEED_FACTOR = 1.5; 
+        const BOOST_JUMP_FACTOR = 1.25; 
         
+        // Wind Constants
+        const WIND_DURATION_MIN = 300; // 5 seconds
+        const WIND_DURATION_MAX = 420; // 7 seconds
+        const MAX_WIND_FORCE = 0.2; // Max horizontal velocity change per frame
+
         // AI Settings (Dynamic Difficulty)
         const AI_SETTINGS = {
             level: 5,
-            
-            // Base values (calibrated for Level 5)
             baseSpeed: 4.0, 
-            baseJumpRange: 60, // Horizontal distance to trigger a jump
+            baseJumpRange: 60, 
             
-            // Methods to get scaled values
             getSpeed() {
-                // Speed scales up/down by 10% per level adjustment from 5
                 return this.baseSpeed * (1 + (this.level - 5) * 0.1); 
             },
             getJumpRange() {
-                // Range scales down for higher difficulty (less horizontal forgiveness/must be closer)
                 return this.baseJumpRange / (1 + (this.level - 5) * 0.08); 
             }
         };
-
 
         // Setup Canvas
         const canvas = document.getElementById('gameCanvas');
@@ -231,11 +234,15 @@
         let gameRunning = true;
         let ballInPlay = false;
         let winningPlayer = null;
-        let lastTouch = null; // 'p1' or 'p2'
         let serveReady = true;
-        let p1Touches = 0; // Tracks consecutive hits by P1 side
-        let p2Touches = 0; // Tracks consecutive hits by P2 side
-        let lastPlayerHit = null; // Tracks the ID of the last player to hit
+        let p1Touches = 0; 
+        let p2Touches = 0; 
+        let lastPlayerHit = null; 
+        let isPaused = false; 
+        
+        // Wind State
+        let windForce = 0; // Current horizontal force
+        let windTimer = 0; // Countdown until wind changes
 
         // Game Objects
         const Court = {
@@ -259,20 +266,36 @@
                 this.height = 60;
                 this.color = color;
                 this.score = 0;
-                this.dx = 0; // Horizontal velocity
-                this.dy = 0; // Vertical velocity (jump)
+                this.dx = 0; 
+                this.dy = 0; 
                 this.isJumping = false;
                 this.isServing = false;
-                this.controls = controls; // { up, left, right, side }
-                this.isAI = (controls.side === 'p2'); // Player 2 is the AI
+                this.controls = controls; 
+                this.isAI = (controls.side === 'p2'); 
+                this.isBoosted = false;
+                this.boostTimer = 0;
             }
 
             draw() {
                 ctx.fillStyle = this.color;
+                
+                // Draw glow effect if boosted
+                if (this.isBoosted) {
+                    ctx.shadowColor = '#3b82f6'; // Electric blue glow
+                    ctx.shadowBlur = 15;
+                } else {
+                    ctx.shadowColor = 'transparent';
+                    ctx.shadowBlur = 0;
+                }
+
                 ctx.beginPath();
                 // Body (Rounded Rectangle)
                 ctx.roundRect(this.x - this.width / 2, this.y, this.width, this.height, 5);
                 ctx.fill();
+
+                // Reset shadow before drawing features that shouldn't glow
+                ctx.shadowColor = 'transparent';
+                ctx.shadowBlur = 0;
 
                 // Eyes (Small circles for simple face)
                 ctx.fillStyle = '#1f2937';
@@ -283,6 +306,15 @@
             }
 
             update() {
+                // Handle Boost Timer
+                if (this.isBoosted) {
+                    this.boostTimer--;
+                    if (this.boostTimer <= 0) {
+                        this.isBoosted = false;
+                        this.boostTimer = 0;
+                    }
+                }
+
                 // Apply Gravity
                 if (this.y < Court.floorY - this.height) {
                     this.dy += GRAVITY;
@@ -310,7 +342,13 @@
 
             jump() {
                 if (!this.isJumping) {
-                    this.dy = -JUMP_POWER;
+                    // Apply jump boost if active
+                    let jumpPower = BASE_JUMP_POWER;
+                    if (this.isBoosted) {
+                        jumpPower *= BOOST_JUMP_FACTOR;
+                    }
+
+                    this.dy = -jumpPower;
                     this.isJumping = true;
                 }
             }
@@ -326,9 +364,28 @@
                 this.color = '#facc15';
                 this.bounceFactor = 0.8;
                 this.maxSpeed = 15;
+                
+                // Trail properties
+                this.trail = [];
+                this.trailLength = 15;
+            }
+            
+            drawTrail() {
+                // Draw fading trail circles
+                for (let i = 0; i < this.trail.length; i++) {
+                    const { x, y } = this.trail[i];
+                    const alpha = 1 - (i / this.trail.length); // Fade out older segments
+                    const radius = this.radius * (0.8 - i * 0.05); // Shrink older segments
+
+                    ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.5})`;
+                    ctx.beginPath();
+                    ctx.arc(x, y, radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
             }
 
             draw() {
+                // Draw Ball
                 ctx.fillStyle = this.color;
                 ctx.beginPath();
                 ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
@@ -346,7 +403,20 @@
             }
 
             update() {
-                if (!ballInPlay) return;
+                if (!ballInPlay) {
+                    // Clear trail when not in play
+                    this.trail = [];
+                    return; 
+                }
+
+                // Update Trail
+                this.trail.unshift({ x: this.x, y: this.y });
+                if (this.trail.length > this.trailLength) {
+                    this.trail.pop();
+                }
+
+                // Apply Wind Force
+                this.dx += windForce;
 
                 // Apply gravity to vertical velocity
                 this.dy += GRAVITY;
@@ -413,7 +483,6 @@
                     // 3. If below the net top, treat it as a dead ball or a strong bounce
                     if (this.y + this.radius > netTop) {
                         // The ball is hitting the main net body
-                        // If the ball's center is on one side, force it back to that side
                         if (this.x < Court.netX) { // On left side
                             if (this.dx > 0) this.dx *= -1; // Push it back left
                         } else { // On right side
@@ -427,9 +496,14 @@
             handleScore() {
                 ballInPlay = false;
                 serveReady = true;
-                p1Touches = 0; // Reset touches on score
-                p2Touches = 0; // Reset touches on score
-                lastPlayerHit = null; // Reset last hit
+                p1Touches = 0; 
+                p2Touches = 0; 
+                lastPlayerHit = null; 
+
+                // Reset boosts on score
+                p1.isBoosted = false; p1.boostTimer = 0;
+                p2.isBoosted = false; p2.boostTimer = 0;
+
 
                 let scoringPlayer = null;
                 const hitFloorX = this.x;
@@ -448,7 +522,6 @@
                 if (scoringPlayer) {
                     scoringPlayer.score++;
                     if (audioReady) {
-                        // Play a deep tone for a score
                         scoreSynth.triggerAttackRelease('C3', '4n', Tone.now(), 0.5);
                     }
                     this.checkWinCondition();
@@ -473,7 +546,6 @@
 
         // Initialize Players and Ball
         const p1 = new Player(CANVAS_WIDTH / 4, '#fde047', { up: 'w', left: 'a', right: 'd', side: 'p1' });
-        // NOTE: p2 is AI controlled
         const p2 = new Player(CANVAS_WIDTH * 3 / 4, '#f87171', { up: 'ArrowUp', left: 'ArrowLeft', right: 'ArrowRight', side: 'p2' }); 
         const ball = new Ball(p1.x, p1.y - 40, 15);
 
@@ -481,6 +553,21 @@
         const keysPressed = {};
 
         document.addEventListener('keydown', (e) => {
+            // Toggle pause state with 'P'
+            if (e.key === 'p' || e.key === 'P') {
+                isPaused = !isPaused;
+                if (isPaused) {
+                    statusMessageEl.textContent = 'GAME PAUSED. Press P to resume.';
+                } else if (!ballInPlay) {
+                    // Restore original message if unpaused but ball is not in play
+                    const server = (p1.score + p2.score) % 2 === 0 ? p1 : p2;
+                    const serverName = server === p1 ? 'Player 1' : 'Computer';
+                    statusMessageEl.textContent = `${serverName} to serve. Press SPACE.`;
+                }
+            }
+
+            if (isPaused) return; 
+
             keysPressed[e.key] = true;
 
             // Serve action
@@ -492,7 +579,6 @@
                 const server = (p1.score + p2.score) % 2 === 0 ? p1 : p2;
 
                 if (server.isAI) {
-                    // AI serve logic is handled in updateAI, just set the flag
                     server.isServing = true;
                     statusMessageEl.textContent = "Computer Serving...";
                 } else {
@@ -512,13 +598,17 @@
         function handleInput() {
             if (!gameRunning) return;
 
+            // Determine player speed, applying boost if active
+            let playerSpeed = BASE_PLAYER_SPEED;
+            if (p1.isBoosted) {
+                playerSpeed *= BOOST_SPEED_FACTOR;
+            }
+
             // Player 1 (Human) controls
             p1.dx = 0;
-            if (keysPressed[p1.controls.left]) p1.dx = -PLAYER_SPEED;
-            if (keysPressed[p1.controls.right]) p1.dx = PLAYER_SPEED;
+            if (keysPressed[p1.controls.left]) p1.dx = -playerSpeed;
+            if (keysPressed[p1.controls.right]) p1.dx = playerSpeed;
             if (keysPressed[p1.controls.up]) p1.jump();
-
-            // Player 2 (AI) controls are handled by updateAI, so no keyboard input here.
         }
 
         function updateAI(aiPlayer) {
@@ -527,35 +617,43 @@
             // --- Serving Logic ---
             if (!ballInPlay && serveReady) {
                 if (aiPlayer.isServing) {
-                    // AI is server, initiate serve automatically
                     ballInPlay = true;
                     serveReady = false;
                     aiPlayer.isServing = false;
                     
-                    // Simple AI serve: aim diagonally towards P1's side
-                    const initialDx = -6; // Towards P1's side
+                    const initialDx = -6; 
                     ball.dx = initialDx + (Math.random() - 0.5) * 2; 
                     ball.dy = -10 - Math.random() * 3; 
                     statusMessageEl.textContent = "Game In Progress!";
                 }
-                return; // Wait for human to press SPACE, or AI to initiate serve
+                return; 
             }
 
             // --- Movement Logic ---
             const targetX = ball.x;
             const aiCenter = aiPlayer.x;
-            const speed = AI_SETTINGS.getSpeed(); // Dynamic speed based on difficulty
+            
+            // Apply speed boost if active
+            let speed = AI_SETTINGS.getSpeed();
+            if (aiPlayer.isBoosted) {
+                 speed *= BOOST_SPEED_FACTOR;
+            }
 
             aiPlayer.dx = 0;
 
-            // Only move if the ball is on the AI's side or approaching the net
             const shouldMove = ballInPlay && (ball.x > Court.netX - 50); 
 
             if (shouldMove) {
-                if (targetX > aiCenter + 5) {
-                    aiPlayer.dx = speed;
-                } else if (targetX < aiCenter - 5) {
-                    aiPlayer.dx = -speed;
+                const distanceToTarget = targetX - aiCenter;
+                let moveSpeed = speed;
+                if (!aiPlayer.isBoosted) {
+                    moveSpeed = Math.min(speed, Math.abs(distanceToTarget) * 0.3); 
+                }
+
+                if (distanceToTarget > 5) {
+                    aiPlayer.dx = moveSpeed;
+                } else if (distanceToTarget < -5) {
+                    aiPlayer.dx = -moveSpeed;
                 }
             } else {
                 // Return to a neutral waiting position 
@@ -567,20 +665,18 @@
             
             // --- Jumping/Hitting Logic ---
             const horizontalDistance = Math.abs(ball.x - aiPlayer.x);
-            const verticalReach = aiPlayer.y - ball.y; // Positive when ball is above AI's head
+            const verticalReach = aiPlayer.y - ball.y; 
 
-            // Conditions for jump:
             const ballInAIArea = ball.x > Court.netX;
-            const jumpThreshold = AI_SETTINGS.getJumpRange(); // Dynamic jump range
+            const jumpThreshold = AI_SETTINGS.getJumpRange(); 
 
             if (ballInPlay && ballInAIArea && !aiPlayer.isJumping) {
                 const canReachHorizontally = horizontalDistance < jumpThreshold;
 
                 if (canReachHorizontally) {
-                    // Check for a spike opportunity (ball is high and descending aggressively)
+                    // Check for a spike opportunity 
                     const isSpikeOpportunity = ball.dy > 1.5 && ball.y < Court.netY + ball.radius; 
                     
-                    // AI will jump more often for spikes on higher difficulty levels
                     const spikeChance = AI_SETTINGS.level / 10; 
 
                     if (isSpikeOpportunity && Math.random() < spikeChance) { 
@@ -593,6 +689,17 @@
                 }
             }
         }
+        
+        // --- Wind Mechanic ---
+        function updateWind() {
+            windTimer--;
+            if (windTimer <= 0) {
+                // Change wind force randomly between -MAX_WIND_FORCE and +MAX_WIND_FORCE
+                windForce = (Math.random() * (MAX_WIND_FORCE * 2) - MAX_WIND_FORCE) * 0.5;
+                // Set new timer duration
+                windTimer = WIND_DURATION_MIN + Math.random() * (WIND_DURATION_MAX - WIND_DURATION_MIN);
+            }
+        }
 
         function handleFoul(foulingPlayerId) {
             ballInPlay = false;
@@ -601,10 +708,12 @@
             let scoringPlayer = (foulingPlayerId === 'p1') ? p2 : p1;
             const foulText = `FOUL! ${foulingPlayerId === 'p1' ? 'Player 1' : 'Computer'} exceeded ${MAX_TOUCHES} touches.`;
             const scoreText = `Point for ${scoringPlayer === p1 ? 'Player 1' : 'Computer'}!`;
+            
+            p1.isBoosted = false; p1.boostTimer = 0;
+            p2.isBoosted = false; p2.boostTimer = 0;
 
             scoringPlayer.score++;
             if (audioReady) {
-                // Play a different tone for a foul
                 scoreSynth.triggerAttackRelease('C2', '2n', Tone.now(), 0.5);
             }
             statusMessageEl.textContent = `${foulText} ${scoreText}`;
@@ -628,13 +737,48 @@
             if (distanceSq < (ball.radius * ball.radius)) {
                 // Collision detected!
 
-                if (audioReady) {
-                    // Play a higher note for a spike
-                    const note = (player.isJumping && player.dy > 0 && ball.y < Court.netY + ball.radius) ? 'G5' : 'C5';
-                    hitSynth.triggerAttackRelease(note, '16n');
+                const playerId = (player === p1) ? 'p1' : 'p2';
+                const opponentId = (player === p1) ? 'p2' : 'p1';
+
+                // 1. TOUCH COUNT LOGIC
+                if (lastPlayerHit === opponentId) {
+                    p1Touches = (player === p1) ? 1 : 0;
+                    p2Touches = (player === p2) ? 1 : 0;
+                } else {
+                    if (player === p1) p1Touches++;
+                    else p2Touches++;
+                }
+                
+                // Check for Triple Touch Foul
+                if ((player === p1 && p1Touches > MAX_TOUCHES) || (player === p2 && p2Touches > MAX_TOUCHES)) {
+                    handleFoul(playerId);
+                    return; 
                 }
 
-                // 1. Calculate the new velocity magnitude and collision vector
+                // 2. SPIKE/BOOST LOGIC
+                let powerBoost = 1.0;
+                const isSpike = player.isJumping && player.dy > 0 && ball.y < Court.netY + ball.radius;
+
+                if (isSpike) {
+                    // Trigger Power Boost for the hitting player
+                    player.isBoosted = true;
+                    player.boostTimer = BOOST_TIME;
+
+                    powerBoost = 1.5;
+                    const hitterName = playerId === 'p1' ? 'Player 1' : 'Computer';
+                    statusMessageEl.textContent = `${hitterName} SPIKE BOOST!`;
+                } else if (ballInPlay) {
+                    const hitterName = playerId === 'p1' ? 'Player 1' : 'Computer';
+                    statusMessageEl.textContent = `Hit ${player === p1 ? p1Touches : p2Touches} for ${hitterName}!`;
+                }
+                
+                // 3. SOUND EFFECT
+                if (audioReady) {
+                    const note = isSpike ? 'G5' : 'C5'; 
+                    hitSynth.triggerAttackRelease(note, '16n');
+                }
+                
+                // 4. PHYSICS RESOLUTION
                 const speed = Math.sqrt(ball.dx * ball.dx + ball.dy * ball.dy);
                 const impactForce = 1.0; 
 
@@ -647,49 +791,13 @@
                 let newDx = normalX * speed * impactForce + player.dx * 0.5;
                 let newDy = normalY * speed * impactForce + player.dy * 0.5;
 
-                // Push ball out of player's bounds to prevent sticky behavior
+                // Push ball out of player's bounds
                 const overlap = ball.radius - normalLength;
                 ball.x += normalX * overlap * 1.5;
                 ball.y += normalY * overlap * 1.5;
 
-
-                // === GAMEPLAY LOGIC: TOUCH COUNT & SPIKE BOOST ===
-                
-                const playerId = (player === p1) ? 'p1' : 'p2';
-                const opponentId = (player === p1) ? 'p2' : 'p1';
-
-                // Check if the ball just crossed the net (touching player is the first touch on this side)
-                if (lastPlayerHit === opponentId) {
-                    p1Touches = (player === p1) ? 1 : 0;
-                    p2Touches = (player === p2) ? 1 : 0;
-                } else {
-                    // Same side consecutive touch
-                    if (player === p1) p1Touches++;
-                    else p2Touches++;
-                }
-                
-                // Check for Triple Touch Foul
-                if ((player === p1 && p1Touches > MAX_TOUCHES) || (player === p2 && p2Touches > MAX_TOUCHES)) {
-                    handleFoul(playerId);
-                    return; // Stop processing collision if foul occurred
-                }
-
-                // Apply Spike/Hit Boost (Stronger hit if jumping and descending: 'spike')
-                let powerBoost = 1.0;
-                if (player.isJumping && player.dy > 0 && ball.y < Court.netY + ball.radius) {
-                    // Player is jumping, moving downwards, and ball is high (spike!)
-                    powerBoost = 1.5;
-                    newDx *= 1.2; // Add more horizontal speed to the spike
-                    newDy *= 1.2;
-                    const hitterName = playerId === 'p1' ? 'Player 1' : 'Computer';
-                    statusMessageEl.textContent = `${hitterName} SPIKE!`;
-                } else if (ballInPlay) {
-                    const hitterName = playerId === 'p1' ? 'Player 1' : 'Computer';
-                    statusMessageEl.textContent = `Hit ${player === p1 ? p1Touches : p2Touches} for ${hitterName}!`;
-                }
-
                 // Apply new velocity
-                ball.dx = newDx * powerBoost;
+                ball.dx = newDx * powerBoost * (isSpike ? 1.2 : 1.0); 
                 ball.dy = newDy * powerBoost;
 
                 // Ensure a minimum upward velocity for better gameplay feel
@@ -699,7 +807,7 @@
                 ball.dx = Math.min(Math.max(ball.dx, -ball.maxSpeed), ball.maxSpeed);
                 ball.dy = Math.min(Math.max(ball.dy, -ball.maxSpeed), ball.maxSpeed);
 
-                // Update last touch for physics/net collision logic
+                // Update last touch
                 lastPlayerHit = playerId;
             }
         }
@@ -712,6 +820,10 @@
             p1.x = CANVAS_WIDTH / 4;
             p2.x = CANVAS_WIDTH * 3 / 4;
             
+            // Reset boosts
+            p1.isBoosted = false; p1.boostTimer = 0;
+            p2.isBoosted = false; p2.boostTimer = 0;
+            
             // Set ball to starting server (P1 for start)
             ball.x = p1.x;
             ball.y = p1.y - 40;
@@ -721,6 +833,7 @@
             gameRunning = true;
             ballInPlay = false;
             serveReady = true;
+            isPaused = false;
             p1Touches = 0;
             p2Touches = 0;
             lastPlayerHit = null;
@@ -782,22 +895,64 @@
             ctx.lineTo(Court.netX, Court.floorY);
             ctx.stroke();
         }
+        
+        function drawWindIndicator() {
+            if (Math.abs(windForce) < 0.01) return; // Only draw if significant wind
+
+            ctx.font = 'bold 20px Chakra Petch';
+            ctx.textAlign = 'left';
+            
+            // Color based on direction (Green for Left, Orange for Right)
+            ctx.fillStyle = windForce > 0 ? '#f97316' : '#10b981'; 
+
+            let windStrength = Math.round(Math.abs(windForce) * 100);
+            const windArrow = windForce > 0 ? '→' : '←';
+            const windText = `WIND ${windArrow} (${windStrength})`;
+            
+            ctx.fillText(windText, 10, 30);
+        }
+
+        function drawPauseOverlay() {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 48px Chakra Petch';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('GAME PAUSED', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
+
+            ctx.font = '24px Chakra Petch';
+            ctx.fillText('Press P to Resume', CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2 + 50);
+        }
+
 
         function draw() {
             // Clear Canvas
             ctx.clearRect(0, 0, Court.width, Court.height);
+            
+            // 1. Draw Ball Trail (should be behind players and court)
+            ball.drawTrail();
 
-            // Draw Court
+            // 2. Draw Court
             drawCourt();
 
-            // Draw Players
+            // 3. Draw Players
             p1.draw();
             p2.draw();
 
-            // Draw Ball
+            // 4. Draw Ball
             ball.draw();
 
-            // Update Scoreboard
+            // 5. Draw Wind Indicator
+            drawWindIndicator();
+
+            // 6. Draw Pause Overlay (if paused)
+            if (isPaused) {
+                drawPauseOverlay();
+            }
+
+            // Update Scoreboard is handled outside the canvas draw loop
             scoreP1El.textContent = `Player 1 (WAD): ${p1.score}`;
             scoreP2El.textContent = `Computer: ${p2.score}`;
         }
@@ -805,14 +960,17 @@
         // --- Game Loop ---
 
         function update() {
-            if (gameRunning) {
-                // 1. Handle Input (Human Player 1)
+            if (gameRunning && !isPaused) { 
+                // 1. Update Environment
+                updateWind();
+                
+                // 2. Handle Input (Human Player 1)
                 handleInput();
 
-                // 2. Handle AI (Computer Player 2)
+                // 3. Handle AI (Computer Player 2)
                 updateAI(p2);
 
-                // 3. Update Game Objects
+                // 4. Update Game Objects
                 p1.update();
                 p2.update();
 
@@ -820,12 +978,11 @@
                 if (!ballInPlay) {
                     const server = (p1.score + p2.score) % 2 === 0 ? p1 : p2; 
                     
-                    ball.x = server.x; // Set ball above the server
+                    ball.x = server.x; 
                     ball.y = server.y - 40;
                     ball.dx = 0;
                     ball.dy = 0;
                     
-                    // Set AI serving state
                     if (server.isAI && serveReady) {
                         server.isServing = true;
                     }
@@ -836,13 +993,13 @@
                 } else {
                     ball.update();
 
-                    // 4. Collision Checks
+                    // 5. Collision Checks
                     checkPlayerBallCollision(p1, ball);
                     checkPlayerBallCollision(p2, ball);
                 }
             }
 
-            // 5. Draw
+            // 6. Draw (Always draw, even when paused)
             draw();
 
             // Request next frame
@@ -855,6 +1012,8 @@
             initAudio(); 
             // Set initial server
             p1.isServing = true;
+            // Initialize wind immediately
+            updateWind();
             requestAnimationFrame(update);
         }
 
