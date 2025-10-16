@@ -14,6 +14,7 @@
             background-color: #1a202c; /* Dark background */
             font-family: 'Chakra Petch', sans-serif;
             display: flex;
+            flex-direction: column;
             justify-content: center;
             align-items: center;
             min-height: 100vh;
@@ -77,6 +78,15 @@
             margin: 0 2px;
             box-shadow: 0 2px 0 #1f2937;
         }
+        
+        #restart-button {
+            transition: all 0.15s ease-in-out;
+            transform: scale(1);
+        }
+        #restart-button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 15px rgba(248, 113, 113, 0.4);
+        }
 
         @media (max-width: 640px) {
             .score-board {
@@ -94,8 +104,13 @@
         <canvas id="gameCanvas" width="800" height="400"></canvas>
         <div class="score-board">
             <div id="score-p1" class="font-bold text-yellow-300">Player 1 (WAD): 0</div>
-            <div id="status-message" class="text-center text-sm font-semibold text-white">Press SPACE to serve</div>
-            <div id="score-p2" class="font-bold text-red-400">Player 2 (🡹🡸🡺): 0</div>
+            
+            <div class="flex flex-col items-center">
+                <div id="status-message" class="text-center text-sm font-semibold text-white">Press SPACE to serve</div>
+                <button id="restart-button" class="mt-1 px-3 py-1 bg-red-600 text-white rounded-lg shadow-md hover:bg-red-700 transition duration-150 hidden">RESTART GAME</button>
+            </div>
+            
+            <div id="score-p2" class="font-bold text-red-400">Computer: 0</div>
         </div>
     </div>
     <div class="controls-info">
@@ -103,7 +118,10 @@
             <span class="font-bold text-yellow-300">Player 1:</span> Move <span class="key">A</span> <span class="key">D</span>, Jump/Hit <span class="key">W</span>
         </p>
         <p>
-            <span class="font-bold text-red-400">Player 2:</span> Move <span class="key">🡸</span> <span class="key">🡺</span>, Jump/Hit <span class="key">🡹</span>
+            <span class="font-bold text-red-400">Computer:</span> **AI Controlled**
+        </p>
+        <p class="mt-2 text-xs text-gray-400">
+            **Rule:** Max **3 hits** per side! Jump and hit while moving down to **SPIKE**!
         </p>
     </div>
 
@@ -118,6 +136,12 @@
         const PLAYER_SPEED = 5;
         const JUMP_POWER = 12;
         const MAX_SCORE = 5;
+        const MAX_TOUCHES = 3; // Max hits per side before crossing the net
+        
+        // AI Constants
+        const AI_SPEED = 4.0; // Slightly slower than the player
+        const AI_JUMP_THRESHOLD_X = 60; // Horizontal distance to trigger a jump
+        const AI_SPIKE_Y = 150; // Y position for prioritizing a spike (higher is better)
 
         // Setup Canvas
         const canvas = document.getElementById('gameCanvas');
@@ -129,6 +153,7 @@
         const scoreP1El = document.getElementById('score-p1');
         const scoreP2El = document.getElementById('score-p2');
         const statusMessageEl = document.getElementById('status-message');
+        const restartButtonEl = document.getElementById('restart-button');
 
         // Game State
         let gameRunning = true;
@@ -136,6 +161,9 @@
         let winningPlayer = null;
         let lastTouch = null; // 'p1' or 'p2'
         let serveReady = true;
+        let p1Touches = 0; // Tracks consecutive hits by P1 side
+        let p2Touches = 0; // Tracks consecutive hits by P2 side
+        let lastPlayerHit = null; // Tracks the ID of the last player to hit
 
         // Game Objects
         const Court = {
@@ -144,6 +172,7 @@
             netX: CANVAS_WIDTH / 2,
             netHeight: 150,
             floorY: CANVAS_HEIGHT - 20,
+            netY: CANVAS_HEIGHT - 20 - 150, // Top of the net
             playerArea: {
                 p1: { minX: 0, maxX: CANVAS_WIDTH / 2 - 20 },
                 p2: { minX: CANVAS_WIDTH / 2 + 20, maxX: CANVAS_WIDTH }
@@ -162,7 +191,8 @@
                 this.dy = 0; // Vertical velocity (jump)
                 this.isJumping = false;
                 this.isServing = false;
-                this.controls = controls; // { up, left, right }
+                this.controls = controls; // { up, left, right, side }
+                this.isAI = (controls.side === 'p2'); // Player 2 is the AI
             }
 
             draw() {
@@ -197,11 +227,12 @@
                 this.x += this.dx;
 
                 // Restrict movement to own side
-                if (this.x < Court.playerArea[this.controls.side].minX + this.width / 2) {
-                    this.x = Court.playerArea[this.controls.side].minX + this.width / 2;
+                const side = this.controls.side;
+                if (this.x < Court.playerArea[side].minX + this.width / 2) {
+                    this.x = Court.playerArea[side].minX + this.width / 2;
                 }
-                if (this.x > Court.playerArea[this.controls.side].maxX - this.width / 2) {
-                    this.x = Court.playerArea[this.controls.side].maxX - this.width / 2;
+                if (this.x > Court.playerArea[side].maxX - this.width / 2) {
+                    this.x = Court.playerArea[side].maxX - this.width / 2;
                 }
             }
 
@@ -283,7 +314,7 @@
                 const netWidth = 10;
                 const netLeft = Court.netX - netWidth / 2;
                 const netRight = Court.netX + netWidth / 2;
-                const netTop = Court.floorY - Court.netHeight;
+                const netTop = Court.netY;
 
                 // Check for collision with the net structure
                 if (
@@ -324,6 +355,9 @@
             handleScore() {
                 ballInPlay = false;
                 serveReady = true;
+                p1Touches = 0; // Reset touches on score
+                p2Touches = 0; // Reset touches on score
+                lastPlayerHit = null; // Reset last hit
 
                 let scoringPlayer = null;
                 const hitFloorX = this.x;
@@ -332,13 +366,11 @@
                 if (hitFloorX < Court.netX) {
                     // Landed on Player 1's side (Player 2 scores)
                     scoringPlayer = p2;
-                    statusMessageEl.textContent = "Point for Player 2!";
-                    lastTouch = 'p1'; // P1 failed to return
+                    statusMessageEl.textContent = "Point for Computer (P1 side floor)!";
                 } else {
                     // Landed on Player 2's side (Player 1 scores)
                     scoringPlayer = p1;
-                    statusMessageEl.textContent = "Point for Player 1!";
-                    lastTouch = 'p2'; // P2 failed to return
+                    statusMessageEl.textContent = "Point for Player 1 (Computer side floor)!";
                 }
 
                 if (scoringPlayer) {
@@ -352,20 +384,22 @@
                     winningPlayer = 'Player 1';
                     gameRunning = false;
                 } else if (p2.score >= MAX_SCORE) {
-                    winningPlayer = 'Player 2';
+                    winningPlayer = 'Computer';
                     gameRunning = false;
                 }
 
                 if (!gameRunning) {
-                    statusMessageEl.textContent = `${winningPlayer} Wins! Press F5 to play again.`;
+                    statusMessageEl.textContent = `${winningPlayer} Wins! Game Over.`;
+                    restartButtonEl.classList.remove('hidden');
                 }
             }
         }
 
         // Initialize Players and Ball
         const p1 = new Player(CANVAS_WIDTH / 4, '#fde047', { up: 'w', left: 'a', right: 'd', side: 'p1' });
-        const p2 = new Player(CANVAS_WIDTH * 3 / 4, '#f87171', { up: 'ArrowUp', left: 'ArrowLeft', right: 'ArrowRight', side: 'p2' });
-        const ball = new Ball(p1.x, p1.y - 20, 15);
+        // NOTE: p2 is now AI controlled, so controls object is irrelevant but kept for structure
+        const p2 = new Player(CANVAS_WIDTH * 3 / 4, '#f87171', { up: 'ArrowUp', left: 'ArrowLeft', right: 'ArrowRight', side: 'p2' }); 
+        const ball = new Ball(p1.x, p1.y - 40, 15);
 
         // Input Tracking
         const keysPressed = {};
@@ -377,9 +411,20 @@
             if (e.key === ' ' && !ballInPlay && serveReady) {
                 ballInPlay = true;
                 serveReady = false;
-                ball.dx = (Math.random() > 0.5 ? 5 : -5); // Random initial direction
-                ball.dy = -10; // Initial upward velocity
-                statusMessageEl.textContent = "Game In Progress!";
+                
+                // Determine server: P1 serves on even points, P2/AI on odd
+                const server = (p1.score + p2.score) % 2 === 0 ? p1 : p2;
+
+                if (server.isAI) {
+                    // AI serve logic (will be handled by updateAI on next frame)
+                    statusMessageEl.textContent = "Computer Serving...";
+                } else {
+                    // Human serve logic
+                    const initialDx = (ball.x < Court.netX) ? 5 : -5;
+                    ball.dx = initialDx * (1 + Math.random() * 0.5); 
+                    ball.dy = -10; // Initial upward velocity
+                    statusMessageEl.textContent = "Game In Progress!";
+                }
             }
         });
 
@@ -390,17 +435,100 @@
         function handleInput() {
             if (!gameRunning) return;
 
-            // Player 1 controls
+            // Player 1 (Human) controls
             p1.dx = 0;
             if (keysPressed[p1.controls.left]) p1.dx = -PLAYER_SPEED;
             if (keysPressed[p1.controls.right]) p1.dx = PLAYER_SPEED;
             if (keysPressed[p1.controls.up]) p1.jump();
 
-            // Player 2 controls
-            p2.dx = 0;
-            if (keysPressed[p2.controls.left]) p2.dx = -PLAYER_SPEED;
-            if (keysPressed[p2.controls.right]) p2.dx = PLAYER_SPEED;
-            if (keysPressed[p2.controls.up]) p2.jump();
+            // Player 2 (AI) controls are handled by updateAI, so no keyboard input here.
+        }
+
+        function updateAI(aiPlayer) {
+            if (!gameRunning) return;
+
+            // --- Serving Logic ---
+            if (!ballInPlay && serveReady) {
+                if (aiPlayer.isServing) {
+                    // AI is server, initiate serve automatically
+                    ballInPlay = true;
+                    serveReady = false;
+                    aiPlayer.isServing = false;
+                    
+                    // Simple AI serve: aim diagonally towards P1's side
+                    const initialDx = -6; // Towards P1's side
+                    ball.dx = initialDx + (Math.random() - 0.5) * 2; 
+                    ball.dy = -10 - Math.random() * 3; 
+                    statusMessageEl.textContent = "Game In Progress!";
+                }
+                return; // Wait for human to press SPACE
+            }
+
+            // --- Movement Logic ---
+            const targetX = ball.x;
+            const aiCenter = aiPlayer.x;
+            const speed = AI_SPEED;
+
+            aiPlayer.dx = 0;
+
+            // Only move if the ball is on the AI's side or approaching the net
+            const shouldMove = ballInPlay && (ball.x > Court.netX - 50); 
+
+            if (shouldMove) {
+                if (targetX > aiCenter + 5) {
+                    aiPlayer.dx = speed;
+                } else if (targetX < aiCenter - 5) {
+                    aiPlayer.dx = -speed;
+                }
+            } else {
+                // Return to a neutral waiting position 
+                const neutralX = Court.width * 3 / 4;
+                if (Math.abs(neutralX - aiCenter) > 5) {
+                    aiPlayer.dx = (neutralX > aiCenter) ? speed : -speed;
+                }
+            }
+            
+            // --- Jumping/Hitting Logic ---
+            const horizontalDistance = Math.abs(ball.x - aiPlayer.x);
+            const verticalReach = aiPlayer.y - ball.y; // Positive when ball is above AI's head
+
+            // Conditions for jump:
+            const ballInAIArea = ball.x > Court.netX;
+
+            if (ballInPlay && ballInAIArea && !aiPlayer.isJumping) {
+                const canReachHorizontally = horizontalDistance < AI_JUMP_THRESHOLD_X;
+
+                if (canReachHorizontally) {
+                    // Check for a spike opportunity (ball is high and descending aggressively)
+                    const isSpikeOpportunity = ball.dy > 1.5 && ball.y < Court.netY + ball.radius; 
+
+                    if (isSpikeOpportunity && Math.random() < 0.8) { // 80% chance to spike if possible
+                        aiPlayer.jump();
+                    } 
+                    // Otherwise, jump if the ball is within a good vertical window
+                    else if (verticalReach > 0 && verticalReach < aiPlayer.height * 2) { 
+                        aiPlayer.jump();
+                    }
+                }
+            }
+        }
+
+        function handleFoul(foulingPlayerId) {
+            ballInPlay = false;
+            serveReady = true;
+
+            let scoringPlayer = (foulingPlayerId === 'p1') ? p2 : p1;
+            const foulText = `FOUL! ${foulingPlayerId === 'p1' ? 'Player 1' : 'Computer'} exceeded ${MAX_TOUCHES} touches.`;
+            const scoreText = `Point for ${scoringPlayer === p1 ? 'Player 1' : 'Computer'}!`;
+
+            scoringPlayer.score++;
+            statusMessageEl.textContent = `${foulText} ${scoreText}`;
+
+            p1Touches = 0;
+            p2Touches = 0;
+            lastPlayerHit = null;
+
+            ball.checkWinCondition();
         }
 
         function checkPlayerBallCollision(player, ball) {
@@ -415,37 +543,110 @@
             if (distanceSq < (ball.radius * ball.radius)) {
                 // Collision detected!
 
-                // 1. Calculate the new velocity magnitude
+                // 1. Calculate the new velocity magnitude and collision vector
                 const speed = Math.sqrt(ball.dx * ball.dx + ball.dy * ball.dy);
-                const impactForce = 1.0; // Base force multiplier
+                const impactForce = 1.0; 
 
-                // 2. Normalize collision vector (closestX, closestY) to ball center (ball.x, ball.y)
                 let normalX = ball.x - closestX;
                 let normalY = ball.y - closestY;
                 const normalLength = Math.sqrt(normalX * normalX + normalY * normalY);
                 normalX /= normalLength;
                 normalY /= normalLength;
 
-                // 3. Calculate new direction and speed
-                // Add a directional component based on where the player is moving/jumping
                 let newDx = normalX * speed * impactForce + player.dx * 0.5;
                 let newDy = normalY * speed * impactForce + player.dy * 0.5;
-
-                // Ensure a minimum upward velocity for better gameplay feel
-                if (newDy > -5) newDy = -5;
-
-                ball.dx = newDx;
-                ball.dy = newDy;
 
                 // Push ball out of player's bounds to prevent sticky behavior
                 const overlap = ball.radius - normalLength;
                 ball.x += normalX * overlap * 1.5;
                 ball.y += normalY * overlap * 1.5;
 
-                // Update last touch for scoring
-                lastTouch = (player === p1) ? 'p1' : 'p2';
+
+                // === GAMEPLAY LOGIC: TOUCH COUNT & SPIKE BOOST ===
+                
+                const playerId = (player === p1) ? 'p1' : 'p2';
+                const opponentId = (player === p1) ? 'p2' : 'p1';
+
+                // Check if the ball just crossed the net (touching player is the first touch on this side)
+                if (lastPlayerHit === opponentId) {
+                    p1Touches = (player === p1) ? 1 : 0;
+                    p2Touches = (player === p2) ? 1 : 0;
+                } else {
+                    // Same side consecutive touch
+                    if (player === p1) p1Touches++;
+                    else p2Touches++;
+                }
+                
+                // Check for Triple Touch Foul
+                if ((player === p1 && p1Touches > MAX_TOUCHES) || (player === p2 && p2Touches > MAX_TOUCHES)) {
+                    handleFoul(playerId);
+                    return; // Stop processing collision if foul occurred
+                }
+
+                // Apply Spike/Hit Boost (Stronger hit if jumping and descending: 'spike')
+                let powerBoost = 1.0;
+                if (player.isJumping && player.dy > 0 && ball.y < Court.netY + ball.radius) {
+                    // Player is jumping, moving downwards, and ball is high (spike!)
+                    powerBoost = 1.5;
+                    newDx *= 1.2; // Add more horizontal speed to the spike
+                    newDy *= 1.2;
+                    const hitterName = playerId === 'p1' ? 'Player 1' : 'Computer';
+                    statusMessageEl.textContent = `${hitterName} SPIKE!`;
+                } else if (ballInPlay) {
+                    const hitterName = playerId === 'p1' ? 'Player 1' : 'Computer';
+                    statusMessageEl.textContent = `Hit ${player === p1 ? p1Touches : p2Touches} for ${hitterName}!`;
+                }
+
+                // Apply new velocity
+                ball.dx = newDx * powerBoost;
+                ball.dy = newDy * powerBoost;
+
+                // Ensure a minimum upward velocity for better gameplay feel
+                if (ball.dy > -5) ball.dy = -5;
+
+                // Enforce max speed after boost
+                ball.dx = Math.min(Math.max(ball.dx, -ball.maxSpeed), ball.maxSpeed);
+                ball.dy = Math.min(Math.max(ball.dy, -ball.maxSpeed), ball.maxSpeed);
+
+                // Update last touch for physics/net collision logic
+                lastPlayerHit = playerId;
             }
         }
+        
+        // --- Game Utility Functions ---
+
+        function resetGame() {
+            p1.score = 0;
+            p2.score = 0;
+            p1.x = CANVAS_WIDTH / 4;
+            p2.x = CANVAS_WIDTH * 3 / 4;
+            
+            // Set ball to starting server (P1 for start)
+            ball.x = p1.x;
+            ball.y = p1.y - 40;
+            ball.dx = 0;
+            ball.dy = 0;
+
+            gameRunning = true;
+            ballInPlay = false;
+            serveReady = true;
+            p1Touches = 0;
+            p2Touches = 0;
+            lastPlayerHit = null;
+            winningPlayer = null;
+            
+            // Set first server
+            const server = (p1.score + p2.score) % 2 === 0 ? p1 : p2;
+            server.isServing = true;
+            const serverName = server === p1 ? 'Player 1' : 'Computer';
+            
+            statusMessageEl.textContent = `${serverName} to serve. Press SPACE.`;
+            restartButtonEl.classList.add('hidden');
+        }
+        
+        // Add listener for the new restart button
+        restartButtonEl.addEventListener('click', resetGame);
+
 
         // --- Drawing Functions ---
 
@@ -507,40 +708,50 @@
 
             // Update Scoreboard
             scoreP1El.textContent = `Player 1 (WAD): ${p1.score}`;
-            scoreP2El.textContent = `Player 2 (🡹🡸🡺): ${p2.score}`;
+            scoreP2El.textContent = `Computer: ${p2.score}`;
         }
 
         // --- Game Loop ---
 
         function update() {
             if (gameRunning) {
-                // 1. Handle Input
+                // 1. Handle Input (Human Player 1)
                 handleInput();
 
-                // 2. Update Game Objects
+                // 2. Handle AI (Computer Player 2)
+                updateAI(p2);
+
+                // 3. Update Game Objects
                 p1.update();
                 p2.update();
 
-                // If ball is not in play, keep it above the last player who touched it (for serving)
+                // If ball is not in play, keep it above the server
                 if (!ballInPlay) {
-                    const server = (p1.score + p2.score) % 2 === 0 ? p1 : p2; // Simple alternating serve
-                    ball.x = server.x;
+                    const server = (p1.score + p2.score) % 2 === 0 ? p1 : p2; 
+                    
+                    ball.x = server.x; // Set ball above the server
                     ball.y = server.y - 40;
                     ball.dx = 0;
                     ball.dy = 0;
-                    if (serveReady) {
-                        statusMessageEl.textContent = `Player ${server === p1 ? 1 : 2} to serve. Press SPACE.`;
+                    
+                    // Set AI serving state
+                    if (server.isAI && serveReady) {
+                        server.isServing = true;
+                    }
+
+                    if (serveReady && !server.isAI) {
+                        statusMessageEl.textContent = `Player 1 to serve. Press SPACE.`;
                     }
                 } else {
                     ball.update();
 
-                    // 3. Collision Checks
+                    // 4. Collision Checks
                     checkPlayerBallCollision(p1, ball);
                     checkPlayerBallCollision(p2, ball);
                 }
             }
 
-            // 4. Draw
+            // 5. Draw
             draw();
 
             // Request next frame
@@ -549,6 +760,8 @@
 
         // Start the game loop on window load
         window.onload = function () {
+            // Set initial server
+            p1.isServing = true;
             requestAnimationFrame(update);
         }
 
