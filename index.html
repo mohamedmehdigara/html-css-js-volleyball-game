@@ -6,9 +6,11 @@
     <title>2D Volleyball Showdown</title>
     <!-- Use Tailwind CDN for the main document structure -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tone.js for Sound Effects -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
     <style>
         /* Custom CSS for the Game Canvas and Elements */
-        @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:wght==600;700&display=swap');
 
         body {
             background-color: #1a202c; /* Dark background */
@@ -120,8 +122,13 @@
         <p>
             <span class="font-bold text-red-400">Computer:</span> **AI Controlled**
         </p>
+        <div class="mt-3 text-sm flex items-center justify-center">
+            <label for="difficulty-slider" class="mr-3 text-white font-semibold">AI Difficulty:</label>
+            <input type="range" id="difficulty-slider" min="1" max="10" value="5" class="w-1/2 h-2 appearance-none bg-gray-600 rounded-full focus:outline-none">
+            <span id="difficulty-label" class="ml-3 w-20 text-yellow-300 font-bold text-left">Medium (5)</span>
+        </div>
         <p class="mt-2 text-xs text-gray-400">
-            **Rule:** Max **3 hits** per side! Jump and hit while moving down to **SPIKE**!
+            **Rule:** Max **3 hits** per side! Jump and hit while moving down to **SPIKE**! (Click anywhere to enable audio)
         </p>
     </div>
 
@@ -138,10 +145,25 @@
         const MAX_SCORE = 5;
         const MAX_TOUCHES = 3; // Max hits per side before crossing the net
         
-        // AI Constants
-        const AI_SPEED = 4.0; // Slightly slower than the player
-        const AI_JUMP_THRESHOLD_X = 60; // Horizontal distance to trigger a jump
-        const AI_SPIKE_Y = 150; // Y position for prioritizing a spike (higher is better)
+        // AI Settings (Dynamic Difficulty)
+        const AI_SETTINGS = {
+            level: 5,
+            
+            // Base values (calibrated for Level 5)
+            baseSpeed: 4.0, 
+            baseJumpRange: 60, // Horizontal distance to trigger a jump
+            
+            // Methods to get scaled values
+            getSpeed() {
+                // Speed scales up/down by 10% per level adjustment from 5
+                return this.baseSpeed * (1 + (this.level - 5) * 0.1); 
+            },
+            getJumpRange() {
+                // Range scales down for higher difficulty (less horizontal forgiveness/must be closer)
+                return this.baseJumpRange / (1 + (this.level - 5) * 0.08); 
+            }
+        };
+
 
         // Setup Canvas
         const canvas = document.getElementById('gameCanvas');
@@ -154,6 +176,56 @@
         const scoreP2El = document.getElementById('score-p2');
         const statusMessageEl = document.getElementById('status-message');
         const restartButtonEl = document.getElementById('restart-button');
+        
+        // DOM Elements for Difficulty Control
+        const difficultySliderEl = document.getElementById('difficulty-slider');
+        const difficultyLabelEl = document.getElementById('difficulty-label');
+
+        // Audio Initialization
+        let hitSynth;
+        let scoreSynth;
+        let audioReady = false;
+
+        function initAudio() {
+            if (audioReady) return;
+            
+            try {
+                // Initialize Tone.js
+                hitSynth = new Tone.PolySynth(Tone.AMSynth).toDestination();
+                scoreSynth = new Tone.MembraneSynth({
+                    pitchDecay: 0.05,
+                    octaves: 10,
+                    oscillator: { type: "square" },
+                    envelope: { attack: 0.001, decay: 0.4, sustain: 0.01 }
+                }).toDestination();
+                
+                // Set up a simple click-to-start mechanism (required for web audio)
+                document.documentElement.addEventListener('click', () => {
+                    if (Tone.context.state !== 'running') {
+                        Tone.start();
+                        console.log("Audio Context Started.");
+                    }
+                }, { once: true });
+                
+                audioReady = true;
+            } catch (error) {
+                console.error("Tone.js initialization failed:", error);
+            }
+        }
+        
+        // Difficulty Slider Event Listener
+        difficultySliderEl.addEventListener('input', (e) => {
+            const newLevel = parseInt(e.target.value);
+            AI_SETTINGS.level = newLevel;
+            
+            let labelText = '';
+            if (newLevel <= 3) labelText = 'Easy';
+            else if (newLevel <= 7) labelText = 'Medium';
+            else labelText = 'Hard';
+            
+            difficultyLabelEl.textContent = `${labelText} (${newLevel})`;
+        });
+
 
         // Game State
         let gameRunning = true;
@@ -375,6 +447,10 @@
 
                 if (scoringPlayer) {
                     scoringPlayer.score++;
+                    if (audioReady) {
+                        // Play a deep tone for a score
+                        scoreSynth.triggerAttackRelease('C3', '4n', Tone.now(), 0.5);
+                    }
                     this.checkWinCondition();
                 }
             }
@@ -397,7 +473,7 @@
 
         // Initialize Players and Ball
         const p1 = new Player(CANVAS_WIDTH / 4, '#fde047', { up: 'w', left: 'a', right: 'd', side: 'p1' });
-        // NOTE: p2 is now AI controlled, so controls object is irrelevant but kept for structure
+        // NOTE: p2 is AI controlled
         const p2 = new Player(CANVAS_WIDTH * 3 / 4, '#f87171', { up: 'ArrowUp', left: 'ArrowLeft', right: 'ArrowRight', side: 'p2' }); 
         const ball = new Ball(p1.x, p1.y - 40, 15);
 
@@ -416,7 +492,8 @@
                 const server = (p1.score + p2.score) % 2 === 0 ? p1 : p2;
 
                 if (server.isAI) {
-                    // AI serve logic (will be handled by updateAI on next frame)
+                    // AI serve logic is handled in updateAI, just set the flag
+                    server.isServing = true;
                     statusMessageEl.textContent = "Computer Serving...";
                 } else {
                     // Human serve logic
@@ -461,13 +538,13 @@
                     ball.dy = -10 - Math.random() * 3; 
                     statusMessageEl.textContent = "Game In Progress!";
                 }
-                return; // Wait for human to press SPACE
+                return; // Wait for human to press SPACE, or AI to initiate serve
             }
 
             // --- Movement Logic ---
             const targetX = ball.x;
             const aiCenter = aiPlayer.x;
-            const speed = AI_SPEED;
+            const speed = AI_SETTINGS.getSpeed(); // Dynamic speed based on difficulty
 
             aiPlayer.dx = 0;
 
@@ -494,15 +571,19 @@
 
             // Conditions for jump:
             const ballInAIArea = ball.x > Court.netX;
+            const jumpThreshold = AI_SETTINGS.getJumpRange(); // Dynamic jump range
 
             if (ballInPlay && ballInAIArea && !aiPlayer.isJumping) {
-                const canReachHorizontally = horizontalDistance < AI_JUMP_THRESHOLD_X;
+                const canReachHorizontally = horizontalDistance < jumpThreshold;
 
                 if (canReachHorizontally) {
                     // Check for a spike opportunity (ball is high and descending aggressively)
                     const isSpikeOpportunity = ball.dy > 1.5 && ball.y < Court.netY + ball.radius; 
+                    
+                    // AI will jump more often for spikes on higher difficulty levels
+                    const spikeChance = AI_SETTINGS.level / 10; 
 
-                    if (isSpikeOpportunity && Math.random() < 0.8) { // 80% chance to spike if possible
+                    if (isSpikeOpportunity && Math.random() < spikeChance) { 
                         aiPlayer.jump();
                     } 
                     // Otherwise, jump if the ball is within a good vertical window
@@ -522,6 +603,10 @@
             const scoreText = `Point for ${scoringPlayer === p1 ? 'Player 1' : 'Computer'}!`;
 
             scoringPlayer.score++;
+            if (audioReady) {
+                // Play a different tone for a foul
+                scoreSynth.triggerAttackRelease('C2', '2n', Tone.now(), 0.5);
+            }
             statusMessageEl.textContent = `${foulText} ${scoreText}`;
 
             p1Touches = 0;
@@ -542,6 +627,12 @@
 
             if (distanceSq < (ball.radius * ball.radius)) {
                 // Collision detected!
+
+                if (audioReady) {
+                    // Play a higher note for a spike
+                    const note = (player.isJumping && player.dy > 0 && ball.y < Court.netY + ball.radius) ? 'G5' : 'C5';
+                    hitSynth.triggerAttackRelease(note, '16n');
+                }
 
                 // 1. Calculate the new velocity magnitude and collision vector
                 const speed = Math.sqrt(ball.dx * ball.dx + ball.dy * ball.dy);
@@ -760,6 +851,8 @@
 
         // Start the game loop on window load
         window.onload = function () {
+            // Initialize audio on first user interaction
+            initAudio(); 
             // Set initial server
             p1.isServing = true;
             requestAnimationFrame(update);
