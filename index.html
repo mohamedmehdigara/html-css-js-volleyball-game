@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -34,7 +35,7 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            position: relative; /* Needed for screen shake */
+            position: relative; /* Needed for screen shake and shadow */
             transition: all 0.1s ease;
         }
 
@@ -121,6 +122,7 @@
             opacity: 0;
             transition: opacity 0.1s;
             pointer-events: none;
+            z-index: 1; /* Below the canvas */
         }
         /* ⭐ NEW FEATURE: Wind Indicator Style */
         #wind-indicator {
@@ -161,7 +163,7 @@
     <div id="game-container" class="transition-all duration-300">
         <canvas id="gameCanvas" width="800" height="400"></canvas>
         
-        <div id="pause-overlay">
+        <div id="ball-shadow" class="ball-shadow"></div> <div id="pause-overlay">
             PAUSED
             <span class="text-lg mt-4 font-normal">Press P to resume</span>
         </div>
@@ -226,7 +228,7 @@
         const BASE_PLAYER_SPEED = 5;
         const BASE_JUMP_POWER = 12;
         const MAX_SCORE = 5;
-        const MAX_TOUCHES = 3; 
+        const MAX_TOUCHES = 3;
         
         // Timer Constant (5 minutes)
         const GAME_TIMER_SECONDS = 5 * 60; 
@@ -310,6 +312,9 @@
         // DOM Elements for Difficulty Control
         const difficultySliderEl = document.getElementById('difficulty-slider');
         const difficultyLabelEl = document.getElementById('difficulty-label');
+        // ⭐ FIX: Added missing Ball Shadow DOM element reference
+        const ballShadowEl = document.getElementById('ball-shadow'); 
+
 
         // Audio Initialization
         let hitSynth;
@@ -521,7 +526,7 @@
                 // ... (Existing implementation for Boost Indicator)
                 if (this.boostType === 0) return;
 
-                const indicatorColor = this.boostType === 1 ? '#facc15' : POWERUP_COLOR; 
+                const indicatorColor = this.boostType === 1 ? '#facc15' : '#3b82f6'; // Yellow for Spike, Blue for Power-up
                 const indicatorText = this.boostType === 1 ? 'SPIKE!' : 'SUPER JUMP!';
                 
                 ctx.fillStyle = indicatorColor;
@@ -552,7 +557,13 @@
 
                 ctx.beginPath();
                 // Body (Rounded Rectangle)
-                ctx.roundRect(this.x - this.width / 2, this.y, this.width, this.height, 5);
+                // ctx.roundRect polyfill/standard: for compatibility, let's use the provided standard
+                if (ctx.roundRect) {
+                    ctx.roundRect(this.x - this.width / 2, this.y, this.width, this.height, 5);
+                } else {
+                    // Fallback for older browsers (simple rect)
+                    ctx.fillRect(this.x - this.width / 2, this.y, this.width, this.height);
+                }
                 ctx.fill();
 
                 // Reset shadow before drawing features that shouldn't glow
@@ -663,7 +674,9 @@
                     if (audioReady) {
                         dashSynth.triggerAttackRelease('16n');
                     }
+                    return true;
                 }
+                return false;
             }
             
             // Method to apply a specific boost
@@ -691,8 +704,7 @@
             
             // ⭐ NEW FEATURE: Ball Shadow Logic
             drawShadow() {
-                const shadowEl = document.getElementById('ball-shadow');
-                if (!shadowEl) return;
+                if (!ballShadowEl) return;
 
                 const distanceToFloor = Court.floorY - (this.y + this.radius);
                 const maxDistance = Court.floorY; 
@@ -701,26 +713,35 @@
                 let opacity = 0;
                 let size = this.radius * 2; 
 
-                if (distanceToFloor > 0) {
-                    opacity = Math.min(0.7, 1 - (distanceToFloor / maxDistance));
-                    size = this.radius * 2 * opacity * 1.5; 
+                if (distanceToFloor > 0 && ballInPlay) {
+                    // Opacity decreases as distance increases
+                    opacity = Math.min(0.7, 1 - (distanceToFloor / (maxDistance * 0.8)));
+                    // Size is slightly bigger at max opacity and squashes as it moves away
+                    size = this.radius * 2 * (0.8 + 0.2 * (1 - (distanceToFloor / maxDistance))) * 1.5; 
+                } else if (distanceToFloor <= 0 && ballInPlay) {
+                     // If on the floor, max opacity
+                    opacity = 0.7; 
+                    size = this.radius * 2 * 1.5;
                 }
+                
+                if (!ballInPlay) opacity = 0;
 
                 // Position the shadow
                 const containerRect = canvasContainerEl.getBoundingClientRect();
                 const canvasRect = canvas.getBoundingClientRect();
                 
-                // Transform canvas coords to viewport/container coords (assuming no scaling yet)
-                const shadowX = this.x + canvasRect.left - containerRect.left - size / 2;
-                const shadowY = Court.floorY - this.radius + canvasRect.top - containerRect.top - size / 4; 
+                // Calculate position relative to game-container
+                // x: Canvas X to DOM X, centered on the ball's X position
+                const shadowX = (this.x / CANVAS_WIDTH) * canvasRect.width + canvasRect.left - containerRect.left - size / 2;
+                // y: Canvas Floor Y to DOM Y
+                const shadowY = (Court.floorY / CANVAS_HEIGHT) * canvasRect.height + canvasRect.top - containerRect.top - (size * 0.25); 
 
-                shadowEl.style.left = `${shadowX}px`;
-                shadowEl.style.top = `${shadowY}px`;
-                shadowEl.style.width = `${size}px`;
-                shadowEl.style.height = `${size * 0.5}px`; // Squashed for better look
-                shadowEl.style.opacity = opacity;
+                ballShadowEl.style.left = `${shadowX}px`;
+                ballShadowEl.style.top = `${shadowY}px`;
+                ballShadowEl.style.width = `${size}px`;
+                ballShadowEl.style.height = `${size * 0.5}px`; // Squashed for better look
+                ballShadowEl.style.opacity = opacity;
             }
-            // (The actual shadow DOM element will be created in the main init function)
 
             drawTrail() {
                 // ... (Existing trail drawing)
@@ -776,6 +797,8 @@
                 if (!ballInPlay) {
                     this.trail = [];
                     this.rotationSpeed = 0;
+                    this.dx = 0;
+                    this.dy = 0;
                     return; 
                 }
 
@@ -794,6 +817,7 @@
 
                 this.dy += GRAVITY;
 
+                // Air Drag/Friction on Spin
                 this.rotationSpeed *= (1 - SPIN_AIR_DRAG);
 
                 this.x += this.dx;
@@ -801,62 +825,6 @@
 
                 this.dx = Math.min(Math.max(this.dx, -this.maxSpeed), this.maxSpeed);
                 this.dy = Math.min(Math.max(this.dy, -this.maxSpeed), this.maxSpeed);
-
-                // Wall bounds (left and right)
-                if (this.x - this.radius < 0) {
-                    this.x = this.radius;
-                    this.dx *= -this.bounceFactor;
-                    this.rotationSpeed *= -0.8;
-                    makeHitSound(0.5);
-                }
-                if (this.x + this.radius > Court.width) {
-                    this.x = Court.width - this.radius;
-                    this.dx *= -this.bounceFactor;
-                    this.rotationSpeed *= -0.8;
-                    makeHitSound(0.5);
-                }
-                
-                // Ceiling bounds
-                if (this.y - this.radius < 0) {
-                    this.y = this.radius;
-                    this.dy *= -this.bounceFactor * 0.5; // Less bounce off the ceiling
-                    this.dx *= 0.95; // Slight friction
-                    this.rotationSpeed *= -0.8;
-                    makeHitSound(0.7);
-                }
-
-                // Floor check (out of bounds logic is separate in checkScore)
-                if (this.y + this.radius > Court.floorY) {
-                    this.y = Court.floorY - this.radius;
-                    this.dy *= -this.bounceFactor; 
-                    this.rotationSpeed *= -0.8;
-                    
-                    // Stop horizontal movement on low-speed bounce
-                    if (Math.abs(this.dy) < 1) {
-                        this.dy = 0;
-                        this.dx *= 0.8; // Ground friction
-                    }
-                    
-                    checkScore();
-                }
-            }
-            
-            // ⭐ NEW: Method to launch the ball for serving
-            launch(player, forceX, forceY, spin) {
-                this.x = player.x;
-                this.y = player.y - this.radius * 2;
-                this.dx = forceX;
-                this.dy = forceY;
-                this.rotationSpeed = spin;
-                ballInPlay = true;
-                player.isServing = false;
-                lastPlayerHit = player; // Player who served is the last to touch
-                
-                // Set initial touches for the serving player
-                if (player === p1) p1Touches = 1;
-                else p2Touches = 1;
-                
-                statusMessageEl.textContent = "Ball in Play!";
             }
         }
 
@@ -865,804 +833,745 @@
                 this.x = x;
                 this.y = y;
                 this.radius = radius;
-                this.type = type; // e.g., 'superJump'
-                this.color = '#3b82f6'; // Blue star color
-                this.dy = 0.5 * (Math.random() > 0.5 ? 1 : -1); // Subtle floating
-                this.initialY = y;
-                this.maxOffset = 5;
+                this.type = type; // 1: Super Jump
+                this.color = '#3b82f6'; // Blue Star
             }
 
             draw() {
                 ctx.save();
                 ctx.translate(this.x, this.y);
-                ctx.fillStyle = this.color;
-                
+
                 // Draw a simple star shape
+                ctx.fillStyle = this.color;
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
                 ctx.beginPath();
-                for (let i = 0; i < 5; i++) {
-                    ctx.lineTo(Math.cos((18 + i * 72) * Math.PI / 180) * this.radius, 
-                               Math.sin((18 + i * 72) * Math.PI / 180) * this.radius);
-                    ctx.lineTo(Math.cos((54 + i * 72) * Math.PI / 180) * this.radius * 0.5, 
-                               Math.sin((54 + i * 72) * Math.PI / 180) * this.radius * 0.5);
+                const points = 5;
+                const outerRadius = this.radius;
+                const innerRadius = this.radius * 0.4;
+
+                for (let i = 0; i < points * 2; i++) {
+                    const angle = Math.PI / points * i;
+                    const r = (i % 2) === 0 ? outerRadius : innerRadius;
+                    const x = Math.cos(angle - Math.PI / 2) * r;
+                    const y = Math.sin(angle - Math.PI / 2) * r;
+                    if (i === 0) {
+                        ctx.moveTo(x, y);
+                    } else {
+                        ctx.lineTo(x, y);
+                    }
                 }
+
                 ctx.closePath();
                 ctx.fill();
+                ctx.stroke();
                 
-                // Subtle glowing effect
+                // Add a slight glow
                 ctx.shadowColor = this.color;
                 ctx.shadowBlur = 10;
-                
+                ctx.fill();
+                ctx.shadowBlur = 0; // Reset shadow
+
                 ctx.restore();
-                
-                // Reset shadow
-                ctx.shadowColor = 'transparent';
-                ctx.shadowBlur = 0;
             }
 
-            update() {
-                // Subtle floating animation
-                this.y = this.initialY + Math.sin(Date.now() * 0.005) * this.maxOffset;
-            }
+            // Power-ups don't move, so no update method needed
         }
 
         // Initialize Game Objects
-        const p1 = new Player(CANVAS_WIDTH * 0.25, '#facc15', { side: 'p1', jump: 'ArrowUp', left: 'ArrowLeft', right: 'ArrowRight', dash: 'e' });
-        const p2 = new Player(CANVAS_WIDTH * 0.75, '#f87171', { side: 'p2' }); // P2 is AI controlled
-        const ball = new Ball(CANVAS_WIDTH / 2, Court.floorY - 100, 10);
+        let player1;
+        let player2;
+        let ball;
 
-        // Input Handling
-        const keys = {};
-        document.addEventListener('keydown', (e) => {
-            keys[e.key] = true;
+        function resetGame() {
+            // Re-initialize players and ball to their starting states
+            player1 = new Player(CANVAS_WIDTH / 4, '#facc15', { side: 'p1', left: 'ArrowLeft', right: 'ArrowRight', jump: 'ArrowUp', dash: 'e' });
+            player2 = new Player(CANVAS_WIDTH * 3 / 4, '#f87171', { side: 'p2', left: 'a', right: 'd', jump: 'w', dash: 'q' });
+            ball = new Ball(CANVAS_WIDTH / 4, Court.floorY - 60 - 20, 10);
             
-            // Initial jump/serve trigger
-            if (!ballInPlay && serveReady && e.key === ' ') { // SPACE to serve for P1
-                if (lastServeSide === 'p1') {
-                    p1.isServing = true;
-                    // Auto-position ball for serve
-                    ball.x = p1.x;
-                    ball.y = p1.y - ball.radius * 2;
-                    statusMessageEl.textContent = "Jump and hit with ↑ to serve!";
+            // Reset state variables
+            ballInPlay = false;
+            winningPlayer = null;
+            p1Touches = 0; 
+            p2Touches = 0; 
+            lastPlayerHit = null;
+            serveReady = true;
+            isPaused = false;
+            spikeFlashTimer = 0;
+            
+            // Reset Scores, Timer, and UI
+            player1.score = 0;
+            player2.score = 0;
+            updateScoreDisplay();
+            statusMessageEl.textContent = `Press SPACE to serve (P1 starts)`;
+            restartButtonEl.classList.add('hidden');
+            gameTimeRemaining = GAME_TIMER_SECONDS;
+            updateTimerDisplay();
+            
+            // Reset Power-up
+            powerUp = null;
+            powerUpRespawnTimer = 60; // Initial short delay for power-up
+
+            // Reset Wind
+            windForce = 0;
+            windTargetForce = 0;
+            windTimer = 0;
+            windIndicatorEl.classList.add('hidden');
+        }
+
+        function resetPoint(servingSide) {
+            player1.resetPosition();
+            player2.resetPosition();
+            
+            // Set ball position based on the serving side
+            const playerToServe = (servingSide === 'p1') ? player1 : player2;
+            ball.x = playerToServe.initialX;
+            ball.y = playerToServe.initialY - 20;
+            ball.dx = 0;
+            ball.dy = 0;
+            ball.rotationSpeed = 0;
+
+            ballInPlay = false;
+            serveReady = true;
+            p1Touches = 0;
+            p2Touches = 0;
+            lastPlayerHit = null;
+            lastServeSide = servingSide;
+
+            statusMessageEl.textContent = `Press SPACE to serve (${servingSide === 'p1' ? 'P1' : 'Computer'})`;
+        }
+
+        function updateScore(scoringSide) {
+            if (winningPlayer) return;
+            
+            if (scoringSide === 'p1') {
+                player1.score++;
+                if (audioReady) scoreSynth.triggerAttackRelease('C5', '8n');
+                lastServeSide = 'p1';
+            } else {
+                player2.score++;
+                if (audioReady) scoreSynth.triggerAttackRelease('G4', '8n');
+                lastServeSide = 'p2';
+            }
+
+            updateScoreDisplay();
+            
+            if (player1.score >= MAX_SCORE || player2.score >= MAX_SCORE) {
+                endGame(player1.score > player2.score ? player1 : player2);
+                isScoreLimitMode = true; // Win via score limit
+            } else {
+                resetPoint(lastServeSide);
+            }
+        }
+
+        function endGame(winner) {
+            gameRunning = false;
+            winningPlayer = winner;
+            const winnerName = winner.controls.side === 'p1' ? 'P1 (Arrows)' : 'Computer';
+            statusMessageEl.textContent = `${winnerName} WINS! 🎉`;
+            restartButtonEl.classList.remove('hidden');
+            if (audioReady) {
+                gameEndSynth.triggerAttackRelease(winner.controls.side === 'p1' ? 'C5' : 'G4', '2n');
+            }
+        }
+
+        function updateScoreDisplay() {
+            scoreP1El.textContent = `P1 (Arrows): ${player1.score}`;
+            scoreP2El.textContent = `Computer: ${player2.score}`;
+        }
+        
+        function updateTimerDisplay() {
+            const minutes = Math.floor(gameTimeRemaining / 60);
+            const seconds = gameTimeRemaining % 60;
+            gameTimerEl.textContent = 
+                `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            
+            // Change color when time is low
+            if (gameTimeRemaining <= 30 && gameTimeRemaining > 0) {
+                gameTimerEl.classList.add('text-red-500');
+                gameTimerEl.classList.remove('text-white');
+            } else if (gameTimeRemaining <= 0) {
+                gameTimerEl.classList.add('text-red-700');
+                gameTimerEl.classList.remove('text-red-500');
+                gameTimerEl.classList.remove('text-white');
+            } else {
+                gameTimerEl.classList.remove('text-red-500');
+                gameTimerEl.classList.add('text-white');
+            }
+        }
+
+        // --- Core Game Loop Functions ---
+
+        function drawCourt() {
+            // Draw floor
+            ctx.fillStyle = COURT_COLOR;
+            ctx.fillRect(0, 0, Court.width, Court.floorY);
+            ctx.fillStyle = '#10b981';
+            ctx.fillRect(0, Court.floorY, Court.width, Court.height - Court.floorY);
+
+            // Draw court lines
+            ctx.strokeStyle = LINE_COLOR;
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(0, Court.floorY);
+            ctx.lineTo(Court.width, Court.floorY);
+            ctx.stroke();
+
+            // Draw net post
+            ctx.fillStyle = NET_COLOR;
+            ctx.fillRect(Court.netX - 2, Court.netY, 4, Court.floorY - Court.netY);
+            
+            // Draw net top (thicker line)
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.moveTo(Court.netX, Court.netY);
+            ctx.lineTo(Court.netX, Court.floorY);
+            ctx.stroke();
+            
+            // Draw net mesh (lines for visual effect)
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = 'rgba(238, 238, 238, 0.5)';
+            for(let i = 1; i < 15; i++) {
+                ctx.beginPath();
+                ctx.moveTo(Court.netX, Court.netY + (Court.floorY - Court.netY) / 15 * i);
+                ctx.lineTo(Court.netX - 10, Court.netY + (Court.floorY - Court.netY) / 15 * i);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(Court.netX, Court.netY + (Court.floorY - Court.netY) / 15 * i);
+                ctx.lineTo(Court.netX + 10, Court.netY + (Court.floorY - Court.netY) / 15 * i);
+                ctx.stroke();
+            }
+        }
+        
+        function updateWind() {
+            // --- 1. Manage Wind Timer and Target ---
+            if (windTimer > 0) {
+                windTimer--;
+            } else {
+                // New wind phase
+                windTargetForce = (Math.random() * 2 - 1) * MAX_WIND_FORCE;
+                windTimer = Math.floor(Math.random() * (WIND_DURATION_MAX - WIND_DURATION_MIN) + WIND_DURATION_MIN);
+                windIndicatorEl.classList.remove('hidden');
+            }
+
+            // --- 2. Smooth Transition ---
+            if (Math.abs(windForce - windTargetForce) > windTransitionRate) {
+                windForce += Math.sign(windTargetForce - windForce) * windTransitionRate;
+            } else {
+                windForce = windTargetForce;
+            }
+
+            // --- 3. Update Indicator UI ---
+            let windDir = windForce > 0 ? 'Right' : (windForce < 0 ? 'Left' : 'Calm');
+            let windVal = Math.abs(windForce / MAX_WIND_FORCE);
+            let windStr;
+
+            if (windVal < 0.1) {
+                windStr = 'Calm';
+                windIconEl.textContent = '💨';
+                windIndicatorEl.style.width = '100px';
+            } else if (windVal < 0.5) {
+                windStr = `Breeze (${windDir})`;
+                windIconEl.textContent = windForce > 0 ? '➡️' : '⬅️';
+                windIndicatorEl.style.width = '140px';
+            } else {
+                windStr = `Gale (${windDir})`;
+                windIconEl.textContent = windForce > 0 ? '⏩' : '⏪';
+                windIndicatorEl.style.width = '140px';
+            }
+            
+            windStrengthEl.textContent = windStr;
+
+            if (windForce === 0 && windTargetForce === 0) {
+                 windIndicatorEl.classList.add('hidden');
+            } else {
+                windIndicatorEl.classList.remove('hidden');
+            }
+        }
+
+        function updatePowerUp() {
+            if (powerUp) {
+                // Check for player collision
+                [player1, player2].forEach(player => {
+                    const dx = player.x - powerUp.x;
+                    const dy = (player.y + player.height / 2) - powerUp.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance < player.width/2 + powerUp.radius) {
+                        player.applyBoost(2); // Apply Super Jump boost
+                        powerUp = null; // Remove power-up
+                        powerUpRespawnTimer = Math.floor(Math.random() * (POWERUP_RESPAWN_MAX - POWERUP_RESPAWN_MIN) + POWERUP_RESPAWN_MIN);
+                        if (audioReady) powerupSynth.triggerAttackRelease(['C6', 'G6'], '8n');
+                    }
+                });
+            } else {
+                // Respawn timer countdown
+                powerUpRespawnTimer--;
+                if (powerUpRespawnTimer <= 0) {
+                    // Create a new Super Jump power-up
+                    const x = Math.random() * (CANVAS_WIDTH - 200) + 100; // Somewhere in the top middle
+                    const y = Math.random() * 100 + 50; // High in the air
+                    powerUp = new PowerUp(x, y, 10, 1);
+                    powerUpRespawnTimer = 0; // Stop the countdown until collected
                 }
-            } else if (e.key === p1.controls.jump) {
-                // Check for P1 jump/hit
-                if (p1.isServing && ball.y > p1.y - p1.height * 0.5) { 
-                    // Serve hit - simulate a hit after jump
-                    handlePlayerHit(p1, ball);
+            }
+        }
+        
+        function checkCollisions() {
+            // Ball - Floor collision
+            if (ball.y + ball.radius >= Court.floorY) {
+                ball.y = Court.floorY - ball.radius;
+                ball.dy *= -ball.bounceFactor;
+                ball.dx *= 0.95; // Ground friction
+                ball.rotationSpeed *= 0.8; // Ground stops spin
+                
+                // Point calculation
+                if (ball.x < Court.netX) {
+                    // Landed on P1's side -> P2 scores
+                    statusMessageEl.textContent = 'Point for Computer!';
+                    updateScore('p2');
                 } else {
-                    p1.jump();
+                    // Landed on P2's side -> P1 scores
+                    statusMessageEl.textContent = 'Point for P1!';
+                    updateScore('p1');
                 }
-            } else if (e.key === p1.controls.dash) {
-                p1.dash();
-            } else if (e.key === 'p' || e.key === 'P') {
+                if (audioReady) hitSynth.triggerAttackRelease(['F3', 'A3'], '16n');
+                return; // Point ended, no further checks needed
+            }
+
+            // Ball - Net collision
+            if (ball.x + ball.radius > Court.netX - 2 && 
+                ball.x - ball.radius < Court.netX + 2 && 
+                ball.y + ball.radius > Court.netY) {
+                
+                // Horizontal Net Collision
+                if (ball.y < Court.netY) { 
+                    // Ball hit the net post/bottom on the side
+                    if (ball.x < Court.netX) {
+                        ball.x = Court.netX - ball.radius - 2;
+                    } else {
+                        ball.x = Court.netX + ball.radius + 2;
+                    }
+                    ball.dx *= -1;
+                    ball.dx *= 0.6; // Lose speed on net hit
+                    ball.rotationSpeed *= -1; // Reverse spin
+                } else {
+                    // Ball hit the top of the net
+                    ball.y = Court.netY - ball.radius;
+                    ball.dy *= -1;
+                    ball.dy *= 0.5; // Very soft bounce off the net top
+                }
+
+                // A net hit resets touches for the player whose side the ball is on now
+                const currentSide = ball.x < Court.netX ? 'p1' : 'p2';
+                if (currentSide === 'p1') {
+                    p1Touches = 0;
+                } else {
+                    p2Touches = 0;
+                }
+                
+                if (audioReady) hitSynth.triggerAttackRelease(['A4', 'C5'], '32n');
+            }
+
+            // Ball - Wall (side walls and ceiling) collision
+            if (ball.x - ball.radius < 0 || ball.x + ball.radius > Court.width) {
+                ball.dx *= -1;
+                ball.x = ball.x - ball.radius < 0 ? ball.radius : Court.width - ball.radius;
+                if (audioReady) hitSynth.triggerAttackRelease(['C4', 'E4'], '64n');
+            }
+            if (ball.y - ball.radius < 0) {
+                ball.dy *= -1;
+                ball.y = ball.radius;
+                if (audioReady) hitSynth.triggerAttackRelease(['G4', 'B4'], '64n');
+            }
+
+            // Player - Ball collision
+            [player1, player2].forEach(player => {
+                const playerHitboxX = player.x;
+                const playerHitboxY = player.y + player.height / 2;
+                const hitboxRadius = player.width / 2 + 10; // Wider hit area
+
+                const dx = ball.x - playerHitboxX;
+                const dy = ball.y - playerHitboxY;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance < ball.radius + hitboxRadius) {
+                    
+                    const side = player.controls.side;
+                    let touches = side === 'p1' ? p1Touches : p2Touches;
+                    
+                    // Check for multiple touches
+                    if (player === lastPlayerHit && lastPlayerHit !== null) {
+                        // Skip if already hit by the same player in the same frame
+                        return;
+                    }
+                    
+                    // Check for illegal touch limit (3 touches)
+                    if (touches >= MAX_TOUCHES) {
+                        // Illegal touch: opponent scores
+                        statusMessageEl.textContent = `${side === 'p1' ? 'P1' : 'Computer'} Illegal Touch! Point for ${side === 'p1' ? 'Computer' : 'P1'}`;
+                        updateScore(side === 'p1' ? 'p2' : 'p1');
+                        return;
+                    }
+
+                    // --- Successful Hit ---
+                    ballInPlay = true;
+                    serveReady = false;
+
+                    // Update touch count and last hitter
+                    if (player.controls.side === 'p1') {
+                        p1Touches++;
+                        p2Touches = 0;
+                    } else {
+                        p2Touches++;
+                        p1Touches = 0;
+                    }
+                    lastPlayerHit = player;
+                    
+                    // Collision response: simple vector reflection/boost
+                    const angle = Math.atan2(dy, dx);
+                    let newDX = Math.cos(angle) * (ball.radius + hitboxRadius - distance);
+                    let newDY = Math.sin(angle) * (ball.radius + hitboxRadius - distance);
+
+                    // Push ball out of player
+                    ball.x += newDX * 0.5;
+                    ball.y += newDY * 0.5;
+
+                    // New velocity based on player's velocity
+                    let playerSpeed = BASE_PLAYER_SPEED;
+                    let jumpPower = BASE_JUMP_POWER;
+                    
+                    // Apply boost factors
+                    if (player.boostType !== 0) {
+                        playerSpeed *= BOOST_SPEED_FACTOR;
+                        jumpPower *= BOOST_JUMP_FACTOR * 0.8; // Smaller jump boost impact on hit
+                    }
+                    
+                    // Calculate ball hit speed
+                    let hitSpeedX = player.dx * 0.8; // Player's horizontal momentum contributes
+                    let hitSpeedY = player.isJumping ? -jumpPower * 0.8 : ball.dy * 0.8; 
+                    
+                    // Add impulse from the player to the ball
+                    ball.dx = hitSpeedX + Math.cos(angle) * 3;
+                    ball.dy = hitSpeedY + Math.sin(angle) * 3;
+                    
+                    // Check for a powerful spike (high vertical velocity and on the opponent's side)
+                    let isSpike = false;
+                    const spikeHeightThreshold = Court.netY + ball.radius;
+                    if (ball.y < spikeHeightThreshold && 
+                        ((side === 'p1' && ball.x > Court.netX) || (side === 'p2' && ball.x < Court.netX))) {
+                        
+                        // Vertical velocity must be downward and fast
+                        if (ball.dy > 5) {
+                             // Apply spike force (hard downward and opponent-side speed)
+                             const spikeForce = 1.8;
+                             ball.dx = (side === 'p1' ? spikeForce : -spikeForce) * 10;
+                             ball.dy = 15;
+                             player.applyBoost(1); // Spike Boost
+                             screenShake(8, 2);
+                             spikeFlashTimer = 10;
+                             isSpike = true;
+                        }
+                    }
+                    
+                    // Calculate spin (based on horizontal velocity change)
+                    ball.rotationSpeed += (ball.dx - hitSpeedX) * 2; 
+
+                    // Play sound
+                    if (audioReady) {
+                        if (isSpike) {
+                            spikeSynth.triggerAttackRelease('8n');
+                        } else {
+                            hitSynth.triggerAttackRelease(['C5', 'E5', 'G5'], '64n');
+                        }
+                    }
+                }
+            });
+        }
+        
+        function AI_Logic() {
+            if (!gameRunning || isPaused) return;
+
+            const player = player2;
+            const courtSide = Court.playerArea.p2;
+            const targetX = ball.x;
+            const ballProjectionX = ball.x + ball.dx * 5; // Predict ball position in 5 frames
+            const ballIsComing = ball.dx < 0 || (ball.x < Court.netX && ball.dx < 0);
+            
+            // --- 1. Movement Logic ---
+            const targetPosition = ballInPlay && ballIsComing ? ballProjectionX : player.initialX;
+            const diff = targetPosition - player.x;
+            const speed = AI_SETTINGS.getSpeed();
+
+            if (diff > 5) {
+                player.dx = speed;
+            } else if (diff < -5) {
+                player.dx = -speed;
+            } else {
+                player.dx = 0; // Stop when close to the target x
+            }
+            
+            // AI horizontal clamping: prioritize staying on their side near the net
+            if (player.x < courtSide.minX + player.width / 2 + 10) {
+                 player.x = courtSide.minX + player.width / 2 + 10;
+                 player.dx = Math.max(0, player.dx);
+            }
+            
+            // --- 2. Jump Logic ---
+            const ballHitY = ball.y + ball.dy * 1; // Predict ball Y in 1 frame
+            const ballIsReachable = Math.abs(diff) < player.width + 10;
+            const jumpThreshold = Court.floorY - player.height - AI_SETTINGS.getJumpRange(); // Jump if ball is below this Y-value (closer to the floor)
+
+            if (!player.isJumping && ballInPlay && ballIsReachable) {
+                // If ball is low and coming, or high and in the kill zone, jump
+                if (ballHitY > jumpThreshold || (ball.y < Court.netY && ball.x > Court.netX)) {
+                    player.jump();
+                }
+            }
+            
+            // --- 3. Dash Logic (Advanced for higher difficulties) ---
+            if (player.isJumping && player.dashCooldown === 0 && player.stamina >= DASH_COST) {
+                const dashChance = AI_SETTINGS.getDashChance();
+                if (Math.random() < dashChance) {
+                    // Check if dash is useful (i.e., will move the player closer to the ball)
+                    const dashDirection = player.dx > 0 ? 1 : (player.dx < 0 ? -1 : (player.controls.side === 'p1' ? 1 : -1));
+                    const nextX = player.x + DASH_FORCE_H * dashDirection;
+                    
+                    const distanceBefore = Math.abs(ball.x - player.x);
+                    const distanceAfter = Math.abs(ball.x - nextX);
+
+                    // Dash if it significantly closes the distance or is a defensive recovery
+                    if (distanceAfter < distanceBefore * 0.5 || (distanceAfter < 50 && ball.dy > 5)) {
+                        player.dash();
+                    }
+                }
+            }
+
+            // --- 4. Serve Logic ---
+            if (serveReady && lastServeSide === 'p2') {
+                // Move towards the serve spot
+                if (player.x !== player.initialX) {
+                    player.dx = Math.sign(player.initialX - player.x) * speed;
+                } else {
+                    // Jump and hit
+                    if (!player.isJumping && Math.random() < 0.05) { // Small delay
+                        player.jump();
+                    }
+                    if (player.isJumping && player.dy < 0 && Math.random() < 0.1) {
+                         // Hit the ball up slightly
+                        ballInPlay = true;
+                        serveReady = false;
+                        player2.isServing = false;
+                        lastPlayerHit = player2;
+                        p2Touches = 1;
+                        p1Touches = 0;
+                        
+                        ball.dx = -8;
+                        ball.dy = -10;
+                        ball.rotationSpeed = -5;
+                        if (audioReady) hitSynth.triggerAttackRelease(['G5'], '64n');
+                        statusMessageEl.textContent = 'Ball in Play!';
+                    }
+                }
+            }
+        }
+
+        function screenShake(duration, intensity) {
+            screenShakeDuration = duration;
+            screenShakeIntensity = intensity;
+        }
+
+        function applyScreenShake() {
+            if (screenShakeDuration > 0) {
+                const offsetX = Math.random() * screenShakeIntensity * 2 - screenShakeIntensity;
+                const offsetY = Math.random() * screenShakeIntensity * 2 - screenShakeIntensity;
+                
+                // Convert canvas coordinates to DOM pixels for translation
+                const scaleX = canvasContainerEl.offsetWidth / CANVAS_WIDTH;
+                const scaleY = canvasContainerEl.offsetHeight / CANVAS_HEIGHT;
+
+                canvasContainerEl.style.transform = `translate(${offsetX * scaleX}px, ${offsetY * scaleY}px)`;
+                screenShakeDuration--;
+            } else {
+                canvasContainerEl.style.transform = 'translate(0, 0)';
+            }
+        }
+
+        let lastFrameTime = 0;
+        const TARGET_FPS = 60;
+        const FRAME_DURATION = 1000 / TARGET_FPS;
+        let gameFrameCounter = 0;
+        let timerInterval = null;
+
+        function gameLoop(timestamp) {
+            if (!gameRunning) return;
+            
+            // Control frame rate (allows for smoother physics on different machines)
+            const elapsed = timestamp - lastFrameTime;
+
+            if (elapsed >= FRAME_DURATION) {
+                lastFrameTime = timestamp - (elapsed % FRAME_DURATION);
+
+                if (!isPaused) {
+                    updateGameLogic();
+                    gameFrameCounter++;
+                }
+                
+                drawGame();
+                applyScreenShake();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function startTimer() {
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                if (isPaused || !gameRunning || winningPlayer) return;
+                
+                if (gameTimeRemaining > 0) {
+                    gameTimeRemaining--;
+                    updateTimerDisplay();
+                } else {
+                    clearInterval(timerInterval);
+                    
+                    // Time's up! Determine winner by score
+                    if (player1.score !== player2.score) {
+                        const winner = player1.score > player2.score ? player1 : player2;
+                        endGame(winner);
+                        isScoreLimitMode = false; // Win via time limit
+                    } else {
+                         // Tie! Keep playing until next score (sudden death implied)
+                        statusMessageEl.textContent = 'TIME OVER! Next point wins (SUDDEN DEATH)';
+                        // In a real game, this might force a point reset, but here we just continue until a score happens
+                    }
+                }
+            }, 1000);
+        }
+
+
+        function updateGameLogic() {
+            // Player input handled by keydown/keyup events, updated in their update() methods
+            
+            // AI Logic
+            AI_Logic();
+
+            // Object Updates
+            player1.update();
+            player2.update();
+            ball.update();
+            
+            // Game State Updates
+            updateWind();
+            updatePowerUp();
+            checkCollisions();
+        }
+
+        function drawGame() {
+            ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+            drawCourt();
+            
+            // Draw power-up if exists
+            if (powerUp) {
+                powerUp.draw();
+            }
+
+            // Draw player hitboxes first (for a simple visual depth)
+            player1.draw();
+            player2.draw();
+
+            // Draw ball and trail
+            ball.drawTrail();
+            ball.draw();
+            ball.drawShadow(); // Draw DOM element shadow based on canvas position
+        }
+
+        // --- Input Handling ---
+        const keys = {};
+
+        document.addEventListener('keydown', (e) => {
+            if (isPaused && e.key.toLowerCase() !== 'p') return;
+
+            keys[e.key] = true;
+
+            // Player 1 Controls (Arrows/E)
+            if (e.key === player1.controls.left) player1.dx = -BASE_PLAYER_SPEED;
+            if (e.key === player1.controls.right) player1.dx = BASE_PLAYER_SPEED;
+            if (e.key === player1.controls.jump && !player1.isAI) player1.jump();
+            if (e.key.toLowerCase() === player1.controls.dash && !player1.isAI) player1.dash();
+
+            // Game Controls
+            if (e.key === ' ' && serveReady && !winningPlayer && lastServeSide === 'p1') {
+                // P1 Serve: jump and hit the ball
+                if (!player1.isJumping) {
+                    player1.jump(); // Player must jump to serve
+                }
+                
+                // Simple serve hit once jumping
+                if (player1.isJumping && player1.dy < 0) {
+                    ballInPlay = true;
+                    serveReady = false;
+                    player1.isServing = false;
+                    lastPlayerHit = player1;
+                    p1Touches = 1;
+                    p2Touches = 0;
+                    
+                    ball.dx = 8;
+                    ball.dy = -10;
+                    ball.rotationSpeed = 5;
+                    if (audioReady) hitSynth.triggerAttackRelease(['C5'], '64n');
+                    statusMessageEl.textContent = 'Ball in Play!';
+                }
+            }
+
+            // Pause toggle
+            if (e.key.toLowerCase() === 'p') {
                 togglePause();
             }
         });
 
         document.addEventListener('keyup', (e) => {
             keys[e.key] = false;
+
+            // Stop movement when key is released
+            if (e.key === player1.controls.left && player1.dx < 0) player1.dx = 0;
+            if (e.key === player1.controls.right && player1.dx > 0) player1.dx = 0;
         });
-        
-        // Mute/Restart Button Handlers
-        restartButtonEl.addEventListener('click', () => {
-            resetGame();
-        });
-        muteButtonEl.addEventListener('click', toggleMute);
-
-
-        // --- Drawing Functions ---
-
-        function drawCourt() {
-            // Court Lines
-            ctx.fillStyle = LINE_COLOR;
-            // Floor line
-            ctx.fillRect(0, Court.floorY, Court.width, 5); 
-            // Center line
-            ctx.fillRect(Court.netX - 2, Court.netY, 4, Court.floorY - Court.netY + 5); 
-            
-            // Net
-            ctx.fillStyle = NET_COLOR;
-            ctx.fillRect(Court.netX - 1, Court.netY, 2, Court.floorY - Court.netY + 5); 
-        }
-
-        function drawStatus() {
-            if (winningPlayer) {
-                ctx.fillStyle = winningPlayer === p1 ? p1.color : p2.color;
-                ctx.font = 'bold 48px Chakra Petch';
-                ctx.textAlign = 'center';
-                const winText = winningPlayer === p1 ? 'PLAYER 1 WINS!' : 'COMPUTER WINS!';
-                ctx.fillText(winText, Court.width / 2, Court.height / 2 - 20);
-                
-                ctx.font = 'bold 24px Chakra Petch';
-                ctx.fillStyle = 'white';
-                ctx.fillText('Press RESTART to play again', Court.width / 2, Court.height / 2 + 30);
-                
-            } else if (serveReady) {
-                // If it's P2's turn, show AI serving
-                if (lastServeSide === 'p2') {
-                    statusMessageEl.textContent = "Computer is serving...";
-                }
-            }
-        }
-        
-        function updateTimer() {
-            if (!gameRunning || isPaused) return;
-
-            gameTimeRemaining--;
-            
-            const minutes = Math.floor(gameTimeRemaining / 60);
-            const seconds = gameTimeRemaining % 60;
-            
-            gameTimerEl.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-
-            if (gameTimeRemaining <= 0) {
-                endGameByTimer();
-            }
-        }
-
-        // --- Game Logic Functions ---
-
-        function updateWind() {
-            if (windTimer > 0) {
-                windTimer--;
-            } else {
-                // New wind phase
-                windTargetForce = (Math.random() - 0.5) * MAX_WIND_FORCE * 2;
-                windTimer = WIND_DURATION_MIN + Math.random() * (WIND_DURATION_MAX - WIND_DURATION_MIN);
-            }
-
-            // Smoothly transition the current wind force to the target
-            windForce += (windTargetForce - windForce) * windTransitionRate * (AI_SETTINGS.level / 5);
-
-            // Update wind indicator
-            windIndicatorEl.classList.remove('hidden');
-            let windDir = '';
-            let icon = '💨';
-            
-            if (Math.abs(windForce) < MAX_WIND_FORCE * 0.1) {
-                windStrengthEl.textContent = 'Calm';
-                windIconEl.textContent = '☁️';
-            } else if (windForce > 0) {
-                windStrengthEl.textContent = 'Left Wind';
-                windIconEl.textContent = '⬅️';
-            } else {
-                windStrengthEl.textContent = 'Right Wind';
-                windIconEl.textContent = '➡️';
-            }
-        }
-        
-        function createPowerUp() {
-            if (powerUp) return; // Only one power-up at a time
-
-            const side = Math.random() > 0.5 ? 'p1' : 'p2';
-            const area = Court.playerArea[side];
-            const x = area.minX + 50 + Math.random() * (area.maxX - area.minX - 100);
-            const y = Court.netY + 50 + Math.random() * (Court.floorY - Court.netY - 100);
-            
-            powerUp = new PowerUp(x, y, 15, 'superJump');
-            powerUpRespawnTimer = 0; // Reset timer
-        }
-
-        function checkNetCollision() {
-            const netX = Court.netX;
-            const netY = Court.netY;
-            const netThickness = 4;
-
-            // Check if ball is near the net's X position
-            if (ball.x + ball.radius > netX - netThickness / 2 && ball.x - ball.radius < netX + netThickness / 2) {
-                // Check if ball is below the top of the net
-                if (ball.y + ball.radius > netY) {
-                    
-                    const newBounceFactor = 0.5; // Net absorbs energy
-                    
-                    // Horizontal collision (Bouncing off the net pole area or mesh)
-                    if (ball.x < netX) {
-                        // Hit from P1 side
-                        ball.x = netX - netThickness / 2 - ball.radius;
-                        ball.dx *= -newBounceFactor;
-                    } else {
-                        // Hit from P2 side
-                        ball.x = netX + netThickness / 2 + ball.radius;
-                        ball.dx *= -newBounceFactor;
-                    }
-                    
-                    ball.rotationSpeed *= -0.5; // Lose spin
-                    makeHitSound(0.3); // Muted sound for net hit
-                }
-            }
-        }
-
-        function isPlayerBallCollision(player, ball) {
-            const dx = ball.x - Math.max(player.x - player.width / 2, Math.min(ball.x, player.x + player.width / 2));
-            const dy = ball.y - Math.max(player.y, Math.min(ball.y, player.y + player.height));
-            return (dx * dx + dy * dy) < (ball.radius * ball.radius);
-        }
-
-        function handlePlayerHit(player, ball) {
-            
-            // 1. Determine direction and speed
-            const dx = ball.x - player.x;
-            const dy = ball.y - player.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-
-            // Angle of hit for more realistic reflection
-            const normalX = dx / distance;
-            const normalY = dy / distance;
-
-            // Base speed increase
-            let hitSpeedFactor = 1.3;
-            if (player.boostType !== 0) {
-                hitSpeedFactor = 2.0; // Higher boost for power-up/spike
-            }
-            
-            // Calculate new velocity based on player movement and hit speed
-            let newDx = (ball.dx * 0.5 + player.dx * 0.8) * hitSpeedFactor;
-            let newDy = (ball.dy * 0.5 + player.dy * 0.8) * hitSpeedFactor * 0.8; // Vertical is slightly dampened for control
-
-            // Apply a strong vertical component upwards on hit
-            newDy = Math.min(newDy, -10); 
-            
-            // 2. Set new ball velocity and spin
-            ball.dx = newDx;
-            ball.dy = newDy;
-            
-            // Apply spin based on player horizontal movement
-            // Positive rotationSpeed is clockwise, which causes the ball to curve to the left if moving right (Magnus)
-            ball.rotationSpeed = player.dx * 0.2; 
-
-            // Prevent repeated hits in the same frame
-            ball.x += ball.dx; 
-            ball.y += ball.dy;
-
-            // 3. Update game state
-            if (player.controls.side === 'p1') {
-                p1Touches++;
-                p2Touches = 0; // Reset opponent's touches
-            } else {
-                p2Touches++;
-                p1Touches = 0;
-            }
-
-            // Check for illegal touch (over the limit)
-            if ((player.controls.side === 'p1' && p1Touches > MAX_TOUCHES) || 
-                (player.controls.side === 'p2' && p2Touches > MAX_TOUCHES)) {
-                // Illegal touch counts as an immediate point for the opponent
-                givePoint(player.controls.side === 'p1' ? p2 : p1, "TOO MANY TOUCHES! Point for Opponent.");
-                return;
-            }
-
-            lastPlayerHit = player;
-            serveReady = false; 
-            
-            // 4. Visual/Audio effects
-            const isSpike = (player.y > Court.netY) && (Math.abs(ball.dx) > 10 || player.boostType > 0);
-            
-            if (isSpike) {
-                // Spike effect: Screen shake and louder sound
-                spikeFlashTimer = 10;
-                startScreenShake(5, 5); 
-                if (audioReady) spikeSynth.triggerAttackRelease('8n', Tone.now(), 0.9);
-                player.applyBoost(1); // Apply Spike Boost
-            } else {
-                if (audioReady) hitSynth.triggerAttackRelease("C4", "8n");
-            }
-        }
-
-        function checkPlayerCollisions() {
-            // Player 1 vs Ball
-            if (ballInPlay && isPlayerBallCollision(p1, ball)) {
-                if (p1.isServing) {
-                    // Ball is already in motion after jump, this is the hit/serve action
-                    handlePlayerHit(p1, ball);
-                } else if (!p1.isServing) {
-                    handlePlayerHit(p1, ball);
-                }
-            }
-            
-            // Player 2 vs Ball (AI)
-            if (ballInPlay && isPlayerBallCollision(p2, ball)) {
-                if (p2.isServing) {
-                    // Ball is already in motion after jump, this is the hit/serve action
-                    handlePlayerHit(p2, ball);
-                } else if (!p2.isServing) {
-                    handlePlayerHit(p2, ball);
-                }
-            }
-        }
-
-        function checkPowerUpCollision() {
-            if (!powerUp) return;
-
-            const players = [p1, p2];
-
-            for (const player of players) {
-                const dx = powerUp.x - player.x;
-                const dy = powerUp.y - (player.y + player.height / 2); // Center of player body
-                const distance = Math.sqrt(dx * dx + dy * dy);
-
-                if (distance < powerUp.radius + player.width / 2) {
-                    // Collision detected!
-                    
-                    player.applyBoost(2); // Apply Super Jump Boost
-                    powerUp = null; // Remove power-up
-                    powerUpRespawnTimer = POWERUP_RESPAWN_MIN + Math.random() * (POWERUP_RESPAWN_MAX - POWERUP_RESPAWN_MIN);
-
-                    if (audioReady) {
-                        powerupSynth.triggerAttackRelease("C5", "8n");
-                        powerupSynth.triggerAttackRelease("G5", "8n", "+0.05");
-                    }
-                    startScreenShake(3, 2);
-                    break; 
-                }
-            }
-        }
-
-        function checkScore() {
-            if (!ballInPlay) return;
-
-            let pointScored = false;
-            let scorer = null;
-            let message = "";
-
-            // Ball hit the floor?
-            if (ball.y + ball.radius >= Court.floorY) {
-                pointScored = true;
-                
-                // If ball landed on P1 side (x < netX)
-                if (ball.x < Court.netX) {
-                    scorer = p2;
-                    message = "Point for Computer (P2)!";
-                } 
-                // If ball landed on P2 side (x > netX)
-                else {
-                    scorer = p1;
-                    message = "Point for Player 1 (P1)!";
-                }
-                
-                // Ball fell on the floor, so reset all movement
-                ball.dx = 0;
-                ball.dy = 0;
-                ballInPlay = false;
-
-            } else if (ball.x + ball.radius < 0 || ball.x - ball.radius > Court.width) {
-                // Out of bounds (unlikely with current wall physics, but good safeguard)
-                pointScored = true;
-                scorer = lastPlayerHit === p1 ? p2 : p1;
-                message = "Out of Bounds! Point for Opponent.";
-            }
-
-            if (pointScored && scorer) {
-                givePoint(scorer, message);
-            }
-        }
-
-        function givePoint(scorer, message) {
-            scorer.score++;
-            statusMessageEl.textContent = message;
-            
-            // Set next server
-            lastServeSide = scorer.controls.side; 
-            
-            // Reset state
-            p1Touches = 0;
-            p2Touches = 0;
-            ballInPlay = false;
-            serveReady = true;
-            
-            p1.resetPosition();
-            p2.resetPosition();
-            
-            // Position ball for new serve
-            if (lastServeSide === 'p1') {
-                ball.x = p1.x;
-                ball.y = p1.y - ball.radius * 2;
-                statusMessageEl.textContent = "P1 to serve: Press SPACE";
-            } else {
-                ball.x = p2.x;
-                ball.y = p2.y - ball.radius * 2;
-                // AI serve logic is in the update loop
-                statusMessageEl.textContent = "Computer is serving...";
-            }
-            ball.dx = 0;
-            ball.dy = 0;
-            
-            updateScores();
-
-            // Check for game over
-            if (isScoreLimitMode && scorer.score >= MAX_SCORE) {
-                winningPlayer = scorer;
-                endGame();
-            }
-            
-            if (audioReady) {
-                scoreSynth.triggerAttackRelease("C5", "4n"); 
-            }
-        }
-        
-        function updateScores() {
-            scoreP1El.textContent = `P1 (Arrows): ${p1.score}`;
-            scoreP2El.textContent = `Computer: ${p2.score}`;
-        }
-        
-        function endGameByTimer() {
-            if (p1.score > p2.score) {
-                winningPlayer = p1;
-            } else if (p2.score > p1.score) {
-                winningPlayer = p2;
-            } else {
-                winningPlayer = 'Tie'; // A string for tie state
-            }
-            
-            // Overwrite the status message for the timer end
-            if (winningPlayer === 'Tie') {
-                statusMessageEl.textContent = "TIME UP! It's a TIE!";
-            } else if (winningPlayer === p1) {
-                statusMessageEl.textContent = `TIME UP! P1 WINS ${p1.score}-${p2.score}!`;
-            } else {
-                statusMessageEl.textContent = `TIME UP! COMPUTER WINS ${p2.score}-${p1.score}!`;
-            }
-            
-            endGame();
-        }
-
-        function endGame() {
-            gameRunning = false;
-            ballInPlay = false;
-            
-            // Ensure status message is final
-            drawStatus(); 
-            
-            // Show restart button
-            restartButtonEl.classList.remove('hidden');
-            
-            if (audioReady && winningPlayer !== 'Tie') {
-                gameEndSynth.triggerAttackRelease(winningPlayer === p1 ? "C4" : "C#4", "2n");
-            }
-        }
-
-        function resetGame() {
-            p1.score = 0;
-            p2.score = 0;
-            gameTimeRemaining = GAME_TIMER_SECONDS;
-            winningPlayer = null;
-            gameRunning = true;
-            restartButtonEl.classList.add('hidden');
-            
-            // Randomly pick who serves first
-            lastServeSide = Math.random() < 0.5 ? 'p1' : 'p2'; 
-            
-            p1.resetPosition();
-            p2.resetPosition();
-            
-            if (lastServeSide === 'p1') {
-                ball.x = p1.x;
-                statusMessageEl.textContent = "Press SPACE to serve";
-            } else {
-                ball.x = p2.x;
-                statusMessageEl.textContent = "Computer is serving...";
-            }
-            
-            ball.y = Court.floorY - ball.radius * 2;
-            ball.dx = 0;
-            ball.dy = 0;
-            ballInPlay = false;
-            serveReady = true;
-            
-            updateScores();
-            
-            // Reset power-up and wind
-            powerUp = null;
-            powerUpRespawnTimer = POWERUP_RESPAWN_MIN; // Start the clock for first powerup
-            windForce = 0;
-            windTargetForce = 0;
-        }
-
-        // --- Utility Functions ---
-        
-        function makeHitSound(velocityFactor) {
-            if (!audioReady || isMuted) return;
-
-            // Pitch and volume based on speed
-            const speed = Math.min(1, Math.sqrt(ball.dx * ball.dx + ball.dy * ball.dy) / ball.maxSpeed) * velocityFactor;
-            const note = speed > 0.5 ? "A4" : "F4";
-            const volume = -10 + speed * 10; 
-            
-            hitSynth.set({ volume: volume });
-            hitSynth.triggerAttackRelease(note, "16n");
-        }
-
-        function startScreenShake(duration, intensity) {
-            screenShakeDuration = duration; // frames
-            screenShakeIntensity = intensity; // pixels
-        }
-
-        function applyScreenShake() {
-            if (screenShakeDuration > 0) {
-                screenShakeDuration--;
-                const xOffset = Math.random() * screenShakeIntensity * 2 - screenShakeIntensity;
-                const yOffset = Math.random() * screenShakeIntensity * 2 - screenShakeIntensity;
-                
-                canvasContainerEl.style.transform = `translate(${xOffset}px, ${yOffset}px)`;
-            } else {
-                canvasContainerEl.style.transform = 'translate(0, 0)';
-            }
-        }
 
         function togglePause() {
-            if (winningPlayer) return; // Cannot pause game over
-
+            if (winningPlayer) return;
             isPaused = !isPaused;
-
             if (isPaused) {
                 pauseOverlayEl.style.display = 'flex';
-                // Stop the game loop implicitly by skipping the update call
+                statusMessageEl.textContent = 'Game Paused (P to resume)';
             } else {
                 pauseOverlayEl.style.display = 'none';
-                // Resume game loop
-                requestAnimationFrame(gameLoop);
-            }
-        }
-        
-        // --- AI Logic (Player 2) ---
-
-        const AI = {
-            
-            // ⭐ NEW FEATURE: AI Dash Cooldown Tracker
-            dashCounter: 0,
-            
-            controlP2: function(p2, ball) {
-                // If game is not running or ball is not in play, only focus on serving
-                if (!gameRunning) return;
-                
-                // --- 1. Serving Logic (FIX: Computer not launching the ball) ---
-                if (serveReady && lastServeSide === 'p2') {
-                    // 1. Move to a good serving position (close to the center line of its side)
-                    const targetX = Court.netX + 50; 
-                    if (p2.x < targetX) {
-                        p2.dx = AI_SETTINGS.getSpeed();
-                    } else if (p2.x > targetX) {
-                        p2.dx = -AI_SETTINGS.getSpeed();
-                    } else {
-                        p2.dx = 0;
-                    }
-                    
-                    // 2. Once in position, trigger the jump/hit action (serve)
-                    if (Math.abs(p2.x - targetX) < p2.width / 4) {
-                        p2.isServing = true; // Set serving state
-                        ball.x = p2.x; // Position ball for serve
-                        ball.y = p2.y - ball.radius * 2;
-                        
-                        // Wait for a slight random delay (to simulate reaction time)
-                        if (Math.random() < (AI_SETTINGS.level / 100)) { // Speed of reaction increases with level
-                            // The AI needs to "jump" (hit) to launch the ball.
-                            // The jump function is overloaded to perform the serve hit if isServing is true AND ball is near.
-                            // For AI, we just call jump(), it'll position and hit in the same frame due to ball positioning.
-                            if (p2.jump()) {
-                                // Successful jump means the ball is hit due to the main logic flow checking for a hit immediately after jump
-                                // We can directly launch the ball here for a more robust serve if the above jump/hit logic is hard to trigger:
-                                
-                                // FORCE LAUNCH:
-                                const forceX = -5 + (AI_SETTINGS.level - 5) * -0.5; // Towards P1, more aggressive with higher level
-                                const forceY = -8; 
-                                const spin = 10 * Math.random() * (AI_SETTINGS.level / 10); // Random spin
-                                ball.launch(p2, forceX, forceY, spin); 
-                                p2.isServing = false; // Reset state after launch
-                            }
-                        }
-                    }
-                    return;
-                }
-                
-                // If not serving, proceed with defensive/offensive logic
-                p2.isServing = false;
-                
-                // --- 2. Follow Ball Logic ---
-                if (ballInPlay) {
-                    const playerCenterY = p2.y + p2.height / 2;
-                    const ballGroundX = ball.x + (Court.floorY - ball.y) * (ball.dx / ball.dy); // Extrapolate where the ball will land
-                    const ballCeilingY = ball.y - ball.radius;
-
-                    let targetX;
-
-                    // If ball is on P2 side and is high (offensive position)
-                    if (ball.x > Court.netX && ballCeilingY < Court.netY) {
-                        targetX = ball.x; // Move directly under the ball for a spike/block
-                    } 
-                    // If ball is on P1 side (wait for it near the net)
-                    else if (ball.x < Court.netX) {
-                        targetX = Court.netX + 50; // Wait near the net
-                    } 
-                    // If ball is on P2 side and low (defensive position)
-                    else {
-                        targetX = ballGroundX; // Go to where the ball is expected to land
-                        // Clamp targetX to P2's side
-                        targetX = Math.min(Court.playerArea.p2.maxX - p2.width / 2, Math.max(Court.playerArea.p2.minX + p2.width / 2, targetX));
-                    }
-
-                    // Horizontal Movement
-                    const speed = AI_SETTINGS.getSpeed();
-                    if (p2.x < targetX - 5) {
-                        p2.dx = speed;
-                    } else if (p2.x > targetX + 5) {
-                        p2.dx = -speed;
-                    } else {
-                        p2.dx = 0;
-                    }
-
-                    // --- 3. Jump/Hit Logic ---
-                    const distanceToBall = Math.sqrt(Math.pow(p2.x - ball.x, 2) + Math.pow(playerCenterY - ball.y, 2));
-                    const jumpThreshold = AI_SETTINGS.getJumpRange(); // Dynamic jump range
-
-                    if (ball.x > Court.netX && distanceToBall < jumpThreshold) {
-                        // Prediction: If ball is falling and close enough
-                        if (ball.dy > 0 && ball.y + ball.radius < Court.floorY) {
-                            p2.jump();
-                        }
-                        // Prediction: If ball is high and player is already under it for block/spike
-                        else if (ball.y < Court.netY && Math.abs(p2.x - ball.x) < p2.width) {
-                            p2.jump();
-                        }
-                    }
-                    
-                    // --- 4. Dash Logic (Strategic Dash) ---
-                    this.dashCounter++;
-                    if (this.dashCounter > DASH_COOLDOWN_FRAMES) {
-                        // Dash if jump wasn't enough AND the ball is in a hittable position above the net
-                        const hitPosition = ball.y - ball.radius < Court.netY;
-                        const hasStamina = p2.stamina >= DASH_COST;
-                        
-                        if (p2.isJumping && hasStamina && hitPosition && Math.random() < AI_SETTINGS.getDashChance()) {
-                            p2.dash();
-                            this.dashCounter = 0; // Reset counter for cooldown
-                        }
-                    }
-                    
-                } else {
-                    // No ball in play, center the player
-                    const center = CANVAS_WIDTH * 0.75;
-                    const speed = AI_SETTINGS.getSpeed() * 0.5;
-                    if (p2.x < center - 5) p2.dx = speed;
-                    else if (p2.x > center + 5) p2.dx = -speed;
-                    else p2.dx = 0;
-                }
-            }
-        };
-
-        // --- Main Game Loop ---
-        let lastTime = 0;
-        const fps = 60;
-        const interval = 1000 / fps;
-        let elapsed = 0;
-        
-        let timerCounter = 0;
-
-        function gameLoop(timestamp) {
-            if (isPaused) return; // Exit early if paused
-
-            if (timestamp < lastTime + interval) {
-                requestAnimationFrame(gameLoop);
-                return;
-            }
-            elapsed = timestamp - lastTime;
-            lastTime = timestamp - (elapsed % interval); // Adjust for frame drift
-
-            ctx.clearRect(0, 0, Court.width, Court.height);
-
-            if (gameRunning) {
-                
-                // Update timers and effects
-                updateWind();
-                applyScreenShake();
-                
-                // Power-up spawning
-                if (!powerUp) {
-                    powerUpRespawnTimer--;
-                    if (powerUpRespawnTimer <= 0) {
-                        createPowerUp();
-                    }
-                }
-                if (powerUp) {
-                    powerUp.update();
-                }
-
-                // Input & AI Control
-                handleP1Input();
-                AI.controlP2(p2, ball); 
-
-                // Object Updates
-                p1.update();
-                p2.update();
-                ball.update();
-                
-                if (ballInPlay) {
-                    checkNetCollision();
-                    checkPlayerCollisions();
-                    checkPowerUpCollision();
-                }
-                
-                // Drawing
-                ctx.fillStyle = COURT_COLOR;
-                ctx.fillRect(0, 0, Court.width, Court.height); 
-
-                drawCourt();
-                
-                if (powerUp) {
-                    powerUp.draw();
-                }
-                
-                ball.drawTrail();
-                ball.drawShadow(); 
-                ball.draw();
-                p1.draw();
-                p2.draw();
-
-                // Timer Update (every 60 frames for 1 second)
-                timerCounter++;
-                if (timerCounter >= 60) {
-                    updateTimer();
-                    timerCounter = 0;
-                }
-            }
-            
-            drawStatus();
-
-            if (gameRunning) {
-                requestAnimationFrame(gameLoop);
+                statusMessageEl.textContent = ballInPlay ? 'Ball in Play!' : `Press SPACE to serve (${lastServeSide === 'p1' ? 'P1' : 'Computer'})`;
             }
         }
 
-        // P1 Input Handling (called from gameLoop)
-        function handleP1Input() {
-            let speed = BASE_PLAYER_SPEED;
-            let boostFactor = 1.0;
-            
-            if (p1.boostType === 1) boostFactor = BOOST_SPEED_FACTOR;
-            else if (p1.boostType === 2) boostFactor = BOOST_SPEED_FACTOR * 1.2; 
-            
-            speed *= boostFactor;
 
-            if (keys[p1.controls.left]) {
-                p1.dx = -speed;
-            } else if (keys[p1.controls.right]) {
-                p1.dx = speed;
-            } else {
-                // Ground friction stop
-                if (!p1.isJumping) {
-                    p1.dx *= 0.8; 
-                }
-            }
-        }
-        
-        // --- Initialization ---
-
-        function init() {
-            // Create ball shadow element for visual effect
-            const shadowEl = document.createElement('div');
-            shadowEl.id = 'ball-shadow';
-            shadowEl.className = 'ball-shadow';
-            canvasContainerEl.appendChild(shadowEl);
-            
-            // Set up audio on first interaction
-            initAudio();
-            
-            // Initial difficulty setup
-            const initialLevel = parseInt(difficultySliderEl.value);
-            AI_SETTINGS.level = initialLevel;
-            
-            let labelText = '';
-            let labelColor = 'text-yellow-300';
-            if (initialLevel <= 3) { labelText = 'Easy'; labelColor = 'text-green-400'; }
-            else if (initialLevel <= 7) { labelText = 'Medium'; labelColor = 'text-yellow-300'; }
-            else { labelText = 'Hard'; labelColor = 'text-red-500'; }
-            
-            difficultyLabelEl.textContent = `${labelText} (${initialLevel})`;
-            difficultyLabelEl.className = `ml-3 w-20 font-bold text-left ${labelColor}`;
-            
+        // --- Event Listeners and Initialization ---
+        restartButtonEl.addEventListener('click', () => {
             resetGame();
+            gameRunning = true;
             requestAnimationFrame(gameLoop);
+            startTimer();
+        });
+        
+        muteButtonEl.addEventListener('click', toggleMute);
+        
+        // Initial setup on page load
+        function initialize() {
+            initAudio(); // Initialize audio context
+            resetGame(); // Reset game state
+            requestAnimationFrame(gameLoop); // Start the game loop
+            startTimer(); // Start the game timer
         }
 
-        init(); 
+        window.onload = initialize;
     </script>
 </body>
 </html>
